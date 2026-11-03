@@ -1,0 +1,19 @@
+name: Feature request
+description: Describe a problem Loop could solve better.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and current workflow
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

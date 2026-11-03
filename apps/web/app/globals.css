@@ -1,0 +1,107 @@
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "tailwindcss";
+
+/* 设计令牌：暖纸底、墨色、唯一的信号橙。状态色只给“正在发生”的事，且永远配文字。 */
+@theme {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-canvas: #f3f0e8;
+  --color-card: #fbfaf6;
+  --color-sunken: #ebe7da;
+  --color-ink: #1b1a17;
+  --color-ink-2: #5f5b52;
+  --color-ink-3: #77726a;
+  --color-line: #ddd8cb;
+  --color-line-strong: #cfc9ba;
+  --color-signal: #e8501c;
+  --color-signal-soft: #fbe9e1;
+  --color-ok: #276b44;
+  --color-ok-soft: #e1efe6;
+  --color-warn: #8a5300;
+  --color-warn-soft: #f6ead0;
+  --color-bad: #b3261e;
+  --color-bad-soft: #f7e0de;
+
+  --radius-control: 6px;
+  --radius-card: 10px;
+  --shadow-pop: 0 8px 28px rgb(27 26 23 / 0.14);
+}
+
+html {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background: var(--color-canvas);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-signal);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[role="combobox"]:focus-visible,
+[role="listbox"]:focus-visible,
+[role="option"]:focus-visible {
+  outline: none;
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--color-sunken) 25%, #f3f0e8 50%, var(--color-sunken) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+  border-radius: 6px;
+}
+.rise { animation: rise 160ms ease-out both; }
+.live-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton, .rise, .live-dot { animation: none; }
+  * { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+}
+
+/* 会话里的 Markdown */
+.md { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.md img { max-width: 100%; height: auto; border-radius: 8px; }
+.md table { display: block; max-width: 100%; overflow-x: auto; }
+.md > * + * { margin-top: 0.6em; }
+.md p, .md li { line-height: 1.7; }
+.md ul { list-style: disc; padding-left: 1.3em; }
+.md ol { list-style: decimal; padding-left: 1.3em; }
+.md a { color: var(--color-signal); text-decoration: underline; text-underline-offset: 2px; }
+.md code { font-family: var(--font-mono); font-size: 0.9em; background: var(--color-sunken); padding: 0.1em 0.35em; border-radius: 4px; }
+.md pre { max-width: 100%; background: var(--color-sunken); padding: 10px 12px; border-radius: 8px; overflow-x: auto; }
+.md pre code { background: none; padding: 0; }
+.md h1, .md h2, .md h3 { font-weight: 600; margin-top: 0.9em; }
+.md table { border-collapse: collapse; }
+.md th, .md td { border: 1px solid var(--color-line); padding: 4px 8px; }
+.md blockquote { border-left: 3px solid var(--color-line-strong); padding-left: 10px; color: var(--color-ink-2); }

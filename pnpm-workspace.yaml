@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - packages/*
+
+# 只允许运行这些固定依赖所需的原生构建脚本。
+onlyBuiltDependencies:
+  - workerd
+  - node-pty
+  - koffi
+  - '@deepseek-ai/dsh-subprocess-local'

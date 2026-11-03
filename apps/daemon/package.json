@@ -1,0 +1,26 @@
+{
+  "name": "@loop/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-strip-types --no-warnings --test src/*.test.ts"
+  },
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "^0.94.0",
+    "@agentclientprotocol/codex-acp": "^2.2.2",
+    "@agentclientprotocol/sdk": "^2.0.0",
+    "@deepseek-ai/dsh": "0.2.1-rc.2",
+    "@loop/core": "workspace:*",
+    "pi-acp": "0.0.34"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  },
+  "bin": {
+    "loopd": "./dist/cli.js"
+  }
+}

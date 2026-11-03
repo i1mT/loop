@@ -1,0 +1,11 @@
+# 从 Neon 控制台复制开发数据库连接串。不要提交真实值。
+DATABASE_URL=
+# 每个值分别使用 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))" 生成。
+LOOP_ADMIN_TOKEN=
+LOOP_DAEMON_TOKEN=
+BETTER_AUTH_SECRET=
+FEISHU_ENCRYPTION_KEY=
+# 仅在启用小问题分类时需要；空值会降级为直接创建任务。
+TYPESAFE_API_KEY=
+# 开发网关直接处理数据；本机转发模式由 start-local.sh 另行生成。
+LOOP_LOCAL={}
