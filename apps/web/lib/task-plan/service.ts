@@ -1,5 +1,6 @@
+import { stageChange } from "../feishu/jobs/context.ts";
 import type { Db } from "../pg.ts";
-import { validatePlan, type TechnicalPlan } from "./contract.ts";
+import { validatePlan, validatePlanTitle, type TechnicalPlan } from "./contract.ts";
 
 export function taskPlanInitialization(
   db: Db,
@@ -38,7 +39,7 @@ export async function getTechnicalPlan(
   return db
     .prepare(
       `SELECT r.task_id AS "taskId",r.round,r.revision,r.phase,
-    COALESCE(p.markdown,'') AS markdown,COALESCE(p.content_hash,'') AS "contentHash",
+    COALESCE(p.title,'') AS title,COALESCE(p.markdown,'') AS markdown,COALESCE(p.content_hash,'') AS "contentHash",
     r.baseline_head AS "baselineHead",r.document_url AS "documentUrl",r.sync_error AS "syncError",
     r.updated_at AS "updatedAt",r.continuation_id AS "continuationId"
     FROM task_plan_rounds r LEFT JOIN task_plans p ON p.task_id=r.task_id AND p.round=r.round AND p.revision=r.revision
@@ -51,7 +52,7 @@ export async function planHistory(db: Db, taskId: string) {
   return (
     await db
       .prepare(
-        `SELECT p.round,p.revision,p.markdown,p.content_hash AS "contentHash",p.created_at AS "createdAt"
+        `SELECT p.round,p.revision,p.title,p.markdown,p.content_hash AS "contentHash",p.created_at AS "createdAt"
     FROM task_plans p WHERE task_id=? ORDER BY round DESC,revision DESC`,
       )
       .bind(taskId)
@@ -73,10 +74,14 @@ export async function acceptTechnicalPlan(
     round: number;
     daemonId: string;
     leaseId: string;
+    title: string;
     markdown: string;
     baselineHead: string;
   },
 ): Promise<void> {
+  const title = input.title.trim();
+  const invalidTitle = validatePlanTitle(title);
+  if (invalidTitle) throw new Error(invalidTitle);
   const invalid = validatePlan(input.markdown);
   if (invalid) throw new Error(invalid);
   if (!/^[a-f0-9]{40,64}$/.test(input.baselineHead))
@@ -106,11 +111,12 @@ export async function acceptTechnicalPlan(
   await db.batch([
     db
       .prepare(
-        `INSERT INTO task_plans(task_id,round,revision,markdown,content_hash,created_at)
-      SELECT task_id,round,revision,?,?,? FROM task_plan_rounds WHERE task_id=? AND round=? AND phase='analyzing' AND ${leaseGuard}
+        `INSERT INTO task_plans(task_id,round,revision,title,markdown,content_hash,created_at)
+      SELECT task_id,round,revision,?,?,?,? FROM task_plan_rounds WHERE task_id=? AND round=? AND phase='analyzing' AND ${leaseGuard}
       ON CONFLICT(task_id,round,revision) DO NOTHING`,
       )
       .bind(
+        title,
         input.markdown,
         hash,
         at,
@@ -133,10 +139,10 @@ export async function approveTechnicalPlan(
   db: Db,
   taskId: string,
   revision?: number,
+  note = "",
 ): Promise<boolean> {
   const at = Date.now();
-  const result = await db
-    .prepare(
+  const result = await stageChange(db, db.prepare(
       `WITH candidate AS (
     SELECT t.id,t.round FROM tasks t JOIN task_plan_rounds r ON r.task_id=t.id AND r.round=t.round
     WHERE t.id=? AND t.stage='plan_reviewing' AND r.phase='awaiting_review' AND r.document_url IS NOT NULL
@@ -149,8 +155,8 @@ export async function approveTechnicalPlan(
     WHERE t.id=a.task_id AND t.round=a.round AND t.stage='plan_reviewing'`,
     )
     .bind(taskId, ...(revision === undefined ? [] : [revision]), at, at)
-    .run();
-  return result.meta.changes === 1;
+    ,taskId,note);
+  return result.rowCount === 1;
 }
 export async function retryTechnicalPlan(
   db: Db,
@@ -209,8 +215,10 @@ export async function reviseTechnicalPlan(
     UPDATE task_plan_rounds r SET revision=r.revision+1,phase='syncing',approved_revision=NULL,continuation_id=NULL,
       sync_error=NULL,retry_at=0,updated_at=? FROM candidate c WHERE r.task_id=c.task_id AND r.round=c.round
     RETURNING r.task_id,r.round,r.revision
-  ) INSERT INTO task_plans(task_id,round,revision,markdown,content_hash,created_at)
-    SELECT task_id,round,revision,?,?,? FROM advanced RETURNING revision`,
+  ) INSERT INTO task_plans(task_id,round,revision,title,markdown,content_hash,created_at)
+    SELECT task_id,round,revision,
+      COALESCE((SELECT p.title FROM task_plans p WHERE p.task_id=advanced.task_id AND p.round=advanced.round ORDER BY p.revision DESC LIMIT 1),''),
+      ?,?,? FROM advanced RETURNING revision`,
     )
     .bind(taskId, revision, at, at, markdown, hash, at)
     .first<{ revision: number }>();

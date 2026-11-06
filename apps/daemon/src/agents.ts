@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 // 智能体规格：所有智能体都以“免审批”方式启动（用户明确要求，任务都在一次性 worktree 里执行）。
 // 结论来源：docs/contracts/acp-findings.md（P-13、P-15、P-18）。
 import { mkdirSync, appendFileSync, readFileSync, existsSync } from "node:fs";
@@ -6,7 +7,7 @@ import type { AgentSpec } from "./acp/agent-conn.ts";
 import { commonGitDir, type Worktree } from "./worktree.ts";
 
 // 适配器用本包 node_modules/.bin 的绝对路径，避免 pnpm 在测试仓库目录里找不到工作区（P-8）
-const LOCAL_BIN = new URL("../node_modules/.bin/", import.meta.url).pathname;
+const LOCAL_BIN = fileURLToPath(new URL("../node_modules/.bin/", import.meta.url));
 const PROXY_VARS = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY"];
 
 export const BUILTIN_SPECS: Record<string, AgentSpec> = {

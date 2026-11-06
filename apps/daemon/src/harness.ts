@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 // ACP 探测用的最小宿主：启动智能体子进程，所有操作都在 connectWith 的回调里完成（与 probe.ts 同一写法）。
 // 仅供实测与后续适配器参考，不含业务逻辑。
 import { spawn, type ChildProcess } from "node:child_process";
@@ -7,7 +8,7 @@ import * as acp from "@agentclientprotocol/sdk";
 export type AgentKind = "claude" | "codex" | "opencode" | "grok" | "pi" | "dsh";
 
 // 适配器用本包的 node_modules/.bin 绝对路径启动，避免 pnpm 在测试仓库目录里找不到工作区
-const LOCAL_BIN = new URL("../node_modules/.bin/", import.meta.url).pathname;
+const LOCAL_BIN = fileURLToPath(new URL("../node_modules/.bin/", import.meta.url));
 const COMMANDS: Record<AgentKind, string[]> = {
   claude: [LOCAL_BIN + "claude-agent-acp"],
   codex: [LOCAL_BIN + "codex-acp"],

@@ -19,6 +19,7 @@ interface Plan {
   taskId: string;
   round: number;
   revision: number;
+  title: string;
   phase: string;
   markdown: string;
   contentHash: string;
@@ -70,6 +71,7 @@ export default function TaskPlanPage() {
     {plan.syncError && <div className="grid gap-3"><InlineError>技术方案没有完整保存到飞书：{plan.syncError}</InlineError>{!historical && <div><Button size="sm" loading={busy} onClick={() => void retry()}><RefreshCw className="size-3.5" />重新保存到飞书</Button></div>}</div>}
     {recordErrors.map((record) => <div key={`${record.round}:${record.kind}`} className="grid gap-2"><InlineError>第 {record.round} 轮{record.kind === "publish" ? "发布结果" : "实际改动记录"}尚未保存到飞书：{record.syncError}</InlineError><div><Button size="sm" loading={busy} onClick={() => void retry()}>重新保存记录</Button></div></div>)}
     {result.error && <InlineError>刷新失败：{result.error.message}</InlineError>}
+    {plan.title && <h3 className="min-w-0 break-words text-base font-semibold">{plan.title}</h3>}
     {plan.markdown ? <article className="md min-w-0 break-words text-sm"><Markdown remarkPlugins={[remarkGfm]}>{plan.markdown}</Markdown></article> : <EmptyState title="正在分析任务">智能体会先阅读代码，整理背景、技术实现、改动点和验证方式。</EmptyState>}
     <Dialog open={!!editing} onOpenChange={(open) => !open && !busy && setEditing(null)} title="修订技术方案" description="保留必要章节并说明改动。提交后会生成新版本，原版本仍然可以查看。" wide>
       {editing && <div className="grid gap-4"><div className="h-[50dvh] min-h-[280px] overflow-hidden rounded-control border border-line"><MarkdownEditor id="technical-plan-revision" value={editing.markdown} onChange={(markdown) => setEditing((previous) => previous ? { ...previous, markdown } : previous)} onError={setEditError} /></div>{editError && <InlineError>{editError}</InlineError>}<div className="flex justify-end gap-2"><Button disabled={busy} onClick={() => setEditing(null)}>取消</Button><Button variant="primary" loading={busy} disabled={!editing.markdown.trim()} onClick={() => void revise()}>提交修订</Button></div></div>}

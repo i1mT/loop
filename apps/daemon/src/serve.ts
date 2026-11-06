@@ -19,17 +19,18 @@ import {
   type ProjectCommands,
 } from "./project-commands.ts";
 import { runShell } from "./shell.ts";
-import { restoreWorktree, startNewRound, type Worktree } from "./worktree.ts";
+import { git, restoreWorktree, startNewRound, type Worktree } from "./worktree.ts";
 import { discoverAgents, listClaudeSessions } from "./discovery.ts";
 import { probeAgentOptions, type AgentOptions } from "./agent-options.ts";
 import { BUILTIN_SPECS } from "./agents.ts";
 import {
   parseVerdict,
   publishPrompt,
+  PublishUnavailableError,
   runPublishInSession,
   syncToMergedMain,
 } from "./publish-agent.ts";
-import { GitHubForge, lastPrNumber, type Forge, type PrRef } from "./forge.ts";
+import { GitHubForge, GitLabForge, parseRemoteUrl, type Forge, type PrRef } from "./forge.ts";
 import {
   branchBase,
   commitLeftovers,
@@ -62,7 +63,8 @@ export function nextTickMs(
 }
 const PUBLISH_TIMEOUT_MS = 20 * 60_000;
 
-export const LOOPD_VERSION = "0.1.0";
+import { LOOPD_VERSION } from "./connection/version.ts";
+export { LOOPD_VERSION };
 
 export interface ServeOptions {
   gateway: string;
@@ -90,6 +92,8 @@ interface ActiveSession {
   inboxCursor: number;
   lost: boolean; // 租约被网关收回：停止写入
   reportedHead: string | null; // 已经回传过的提交
+  /** 这个任务用的代码托管实现：GitHub 用 gh，自建 GitLab 走 REST API */
+  forge: Forge;
   githubRepo: string;
   mainBranch: string;
   title: string;
@@ -175,6 +179,8 @@ type Claim = {
     reattach: boolean;
     job: "work" | "publish";
     approvedSha: string | null;
+    /** PR 合并提交：恢复后 PR 信息可能被清掉，有这个就能直接重试发布 */
+    mergeSha: string | null;
     /** 第几轮（发布后继续迭代一次加一）；比本机会话记录的大，说明是新一轮 */
     round?: number;
     technicalPlan?: { required: boolean; phase: string };
@@ -361,6 +367,58 @@ export async function serve(opts: ServeOptions): Promise<void> {
         }
       }
 
+      // 2. 收件箱优先：先执行待处理消息，再报告空闲状态与提交，避免恢复时把旧提交重新交给审核
+      for (const [sid, a] of active) {
+        if (a.lost) continue;
+        const r = await gw.call<{
+          ok: boolean;
+          items: {
+            id: number;
+            kind: "message" | "decision" | "republish";
+            body: string | null;
+            requestId: string | null;
+            optionId: string | null;
+          }[];
+        }>("GET", `/api/daemon/sessions/${sid}/inbox?after=${a.inboxCursor}`);
+        for (const item of r.data.items ?? []) {
+          if (item.kind === "republish") {
+            // 人点了“重新推送并创建 PR”：清掉回传记录与重试等待，下一轮立刻重新推送、建 PR
+            a.reportedHead = null;
+            a.retryAt = 0;
+            log(`收到重新推送并创建 PR 的请求（会话 ${sid}）`);
+          } else {
+            if (a.technicalPlan && item.kind === "message") {
+              const response = await planState(ctx, a);
+              if (response && response.phase !== "implementing") {
+                // 新一轮的原始需求仍保留在收件箱，分析轮次使用相同会话。
+                const meta = d.store.getMeta(sid);
+                if (
+                  response.phase !== "analyzing" ||
+                  !meta ||
+                  !["idle", "needs_you"].includes(meta.state)
+                )
+                  continue;
+                if (!d.isLive(sid)) await d.resume(sid);
+                d.store.updateMeta(sid, {
+                  planRound: a.round,
+                  analysisOnly: true,
+                });
+                d.reply(sid, `${item.body ?? ""}${TECHNICAL_PLAN_INSTRUCTION}`);
+              } else
+                await deliver(
+                  d,
+                  sid,
+                  item as Parameters<typeof deliver>[2],
+                  log,
+                );
+            } else
+              await deliver(d, sid, item as Parameters<typeof deliver>[2], log);
+          }
+          await gw.call("POST", `/api/daemon/inbox/${item.id}/ack`);
+          a.inboxCursor = item.id;
+        }
+      }
+
       // 3. 回传事件（幂等：网关按 seq 去重）
       for (const [sid, a] of active) await forwardEvents(ctx, sid, a);
 
@@ -420,7 +478,7 @@ export async function serve(opts: ServeOptions): Promise<void> {
         }
         try {
           const pub = await publishBranch({
-            forge: ctx.forge,
+            forge: a.forge,
             githubRepo: a.githubRepo,
             repoDir: a.repoDir,
             wt,
@@ -433,6 +491,31 @@ export async function serve(opts: ServeOptions): Promise<void> {
             if (pub.created)
               log(`已创建 PR #${pub.pr.number}（${pub.pr.url}）`);
             a.pr = pub.pr;
+          } else {
+            // 分支相对主分支没有新提交：常见于智能体报错（429、凭证）后空跑一轮。
+            // 不能让它进入“待审核但没有 PR”，否则页面只能反复点“重新推送并创建 PR”，永远建不出来。
+            const report = lastAgentReport(d, sid, 600)
+              .replace(/\s+/g, " ")
+              .trim();
+            const reason = `本轮没有产生新的提交，无法创建 PR。智能体最后输出：${report || "（没有输出）"}`;
+            d.store.append(sid, {
+              kind: "check",
+              payload: { name: "publish", ok: false, output: reason },
+            });
+            const marked = await ctx.gw.call(
+              "POST",
+              `/api/daemon/tasks/${a.taskId}/needs-you`,
+              {
+                daemonId: ctx.daemonId,
+                leaseId: a.leaseId,
+                reason: reason.slice(0, 1500),
+              },
+            );
+            if (marked.status !== 200)
+              log(`标记“需要你”失败（${marked.status}）`);
+            else log(`任务 ${a.taskId} 本轮没有提交，已转人工处理`);
+            a.reportedHead = head;
+            continue;
           }
         } catch (e) {
           // 推送或建 PR 失败：记录为检查失败，稍后重试；仍然回传提交，让人能看到现状
@@ -468,58 +551,6 @@ export async function serve(opts: ServeOptions): Promise<void> {
             },
           });
         await reportImplementation(ctx, sid, a, head);
-      }
-
-      // 5. 收件箱：人的回复 → 会话；人的回答 → 等待中的权限或决定
-      for (const [sid, a] of active) {
-        if (a.lost) continue;
-        const r = await gw.call<{
-          ok: boolean;
-          items: {
-            id: number;
-            kind: "message" | "decision" | "republish";
-            body: string | null;
-            requestId: string | null;
-            optionId: string | null;
-          }[];
-        }>("GET", `/api/daemon/sessions/${sid}/inbox?after=${a.inboxCursor}`);
-        for (const item of r.data.items ?? []) {
-          if (item.kind === "republish") {
-            // 人点了“重新推送并创建 PR”：清掉回传记录与重试等待，下一轮立刻重新推送、建 PR
-            a.reportedHead = null;
-            a.retryAt = 0;
-            log(`收到重新推送并创建 PR 的请求（会话 ${sid}）`);
-          } else {
-            if (a.technicalPlan && item.kind === "message") {
-              const response = await planState(ctx, a);
-              if (response && response.phase !== "implementing") {
-                // 新一轮的原始需求仍保留在收件箱，分析轮次使用相同会话。
-                const meta = d.store.getMeta(sid);
-                if (
-                  response.phase !== "analyzing" ||
-                  !meta ||
-                  !["idle", "needs_you"].includes(meta.state)
-                )
-                  continue;
-                if (!d.isLive(sid)) await d.resume(sid);
-                d.store.updateMeta(sid, {
-                  planRound: a.round,
-                  analysisOnly: true,
-                });
-                d.reply(sid, `${item.body ?? ""}${TECHNICAL_PLAN_INSTRUCTION}`);
-              } else
-                await deliver(
-                  d,
-                  sid,
-                  item as Parameters<typeof deliver>[2],
-                  log,
-                );
-            } else
-              await deliver(d, sid, item as Parameters<typeof deliver>[2], log);
-          }
-          await gw.call("POST", `/api/daemon/inbox/${item.id}/ack`);
-          a.inboxCursor = item.id;
-        }
       }
 
       // 5b. 卡住检测：运行中长时间没有输出，升级为"需要你"（不静默等待）
@@ -600,7 +631,7 @@ async function retireTask(
       base: meta.base,
     };
     await retireBranch({
-      forge: ctx.forge,
+      forge: a.forge,
       githubRepo: a.githubRepo,
       repoDir: a.repoDir,
       wt,
@@ -746,7 +777,7 @@ async function handleTechnicalPlan(
       return true;
     }
     try {
-      const markdown = extractTechnicalPlan(lastAgentReport(ctx.d, sid, 65000));
+      const plan = extractTechnicalPlan(lastAgentReport(ctx.d, sid, 65000));
       const result = await ctx.gw.call<{ error?: string }>(
         "POST",
         `/api/daemon/tasks/${a.taskId}/technical-plan`,
@@ -754,7 +785,8 @@ async function handleTechnicalPlan(
           daemonId: ctx.daemonId,
           leaseId: a.leaseId,
           round: a.round,
-          markdown,
+          title: plan.title,
+          markdown: plan.markdown,
           baselineHead: meta.base,
         },
       );
@@ -868,6 +900,24 @@ const startFailures = new Map<string, number>();
 const START_GAP_MS = 5000;
 let lastStartAt = 0;
 
+/** 代码托管实现：本机检出的 origin 不是 github.com 时按自建 GitLab 处理（git 用 SSH/HTTP，MR 用 REST API）。 */
+async function resolveForge(
+  ctx: Ctx,
+  dir: string | null | undefined,
+): Promise<Forge> {
+  if (!dir) return ctx.forge;
+  const origin = (
+    await git(dir, "remote", "get-url", "origin").catch(() => "")
+  ).trim();
+  const remote = parseRemoteUrl(origin);
+  if (!remote || remote.host.toLowerCase() === "github.com") return ctx.forge;
+  return new GitLabForge({
+    host: remote.host,
+    protocol: remote.protocol,
+    token: process.env.GITLAB_TOKEN,
+  });
+}
+
 async function startOrReattach(ctx: Ctx, claim: Claim): Promise<void> {
   const { d, log, active } = ctx;
   const t = claim.task;
@@ -913,12 +963,25 @@ async function startOrReattach(ctx: Ctx, claim: Claim): Promise<void> {
   if (t.sessionId && d.store.getMeta(t.sessionId)) {
     const sid = t.sessionId;
     const meta = d.store.getMeta(sid)!;
+    // 按本机检出的 origin 选代码托管实现（自建 GitLab 用 REST API，其余仍走 gh）
+    let forge: Forge;
+    try {
+      forge = await resolveForge(ctx, meta.repo);
+    } catch (e) {
+      await failLease(ctx, claim.leaseId, (e as Error).message);
+      return;
+    }
     // 工作树被清理过（取消/驳回后人又恢复了任务）：先从分支或 PR 记录重建，再恢复会话
     try {
       const r = await restoreWorktree({
         repo: meta.repo,
         wt: { path: meta.cwd, branch: meta.branch, base: meta.base },
-        prNumber: () => lastPrNumber(t.githubRepo!, meta.branch, meta.repo),
+        prNumber: () =>
+          forge.lastPrNumber({
+            githubRepo: t.githubRepo!,
+            branch: meta.branch,
+            cwd: meta.repo,
+          }),
       });
       if (r === "restored")
         log(`已重建任务 ${t.id} 的工作树（${meta.branch}）`);
@@ -943,7 +1006,7 @@ async function startOrReattach(ctx: Ctx, claim: Claim): Promise<void> {
     const round = t.round ?? 1;
     if (round > (meta.round ?? 1)) {
       try {
-        await ctx.forge.fetch(meta.repo);
+        await forge.fetch(meta.repo);
         const head = await startNewRound(meta.cwd, t.mainRef);
         d.store.updateMeta(sid, { base: head, round });
         meta.base = head;
@@ -976,6 +1039,7 @@ async function startOrReattach(ctx: Ctx, claim: Claim): Promise<void> {
       lost: false,
       reportedHead: null,
       repoDir: meta.repo,
+      forge,
       ...base,
       title,
     });
@@ -984,13 +1048,15 @@ async function startOrReattach(ctx: Ctx, claim: Claim): Promise<void> {
   }
   let sid: string;
   let repoDir: string;
+  let forge: Forge;
   try {
+    forge = await resolveForge(ctx, t.repoPath);
     // 确保本机有一份检出（已有路径或在数据目录克隆）并拉取最新；worktree 永远从 origin/<主分支> 建出
     // 多个任务同时启动智能体时错峰（grok 并发冷启动偶发 Internal error）
     const wait = lastStartAt + START_GAP_MS - Date.now();
     if (wait > 0) await sleep(wait);
     lastStartAt = Date.now();
-    repoDir = await ctx.forge.ensureCheckout({
+    repoDir = await forge.ensureCheckout({
       githubRepo: t.githubRepo,
       localPath: t.repoPath,
       dataDir: ctx.dataDir,
@@ -1037,6 +1103,7 @@ async function startOrReattach(ctx: Ctx, claim: Claim): Promise<void> {
     lost: false,
     reportedHead: null,
     repoDir,
+    forge,
     ...base,
   });
   log(`领取任务 ${t.id}，开始会话 ${sid}（智能体 ${t.agent}）`);
@@ -1061,7 +1128,7 @@ function startPublish(ctx: Ctx, claim: Claim): void {
     ctx.publishing.delete(claim.leaseId);
     // 已发布或失败：这个任务的工作会话完成使命，停止回传与收件箱轮询。
     // 需要重新审核：工作会话仍在，要继续报告提交（否则重新批准时网关拿不到新提交）。
-    if (outcome !== "review_needed")
+    if (outcome !== "review_needed" && outcome !== "sync_conflict")
       for (const [sid, a] of ctx.active)
         if (a.taskId === t.id) ctx.active.delete(sid);
   });
@@ -1079,7 +1146,7 @@ function isPublishing(
 async function complete(
   ctx: Ctx,
   leaseId: string,
-  outcome: "published" | "agent_done" | "failed" | "review_needed",
+  outcome: "published" | "agent_done" | "failed" | "review_needed" | "sync_conflict",
   output: string,
 ): Promise<void> {
   const r = await ctx.gw.call(
@@ -1092,38 +1159,78 @@ async function complete(
   );
 }
 
+async function drainPublishMessages(ctx: Ctx, sid: string): Promise<string> {
+  const r = await ctx.gw
+    .call<{ items?: { id: number; kind: string; body: string | null }[] }>(
+      "GET",
+      `/api/daemon/sessions/${sid}/inbox?after=0`,
+    )
+    .catch(() => ({ status: 0, data: {} as { items?: { id: number; kind: string; body: string | null }[] } }));
+  const notes: string[] = [];
+  for (const item of r.data.items ?? []) {
+    if (item.kind === "message" && item.body?.trim())
+      notes.push(item.body.trim());
+    await ctx.gw
+      .call("POST", `/api/daemon/inbox/${item.id}/ack`)
+      .catch(() => undefined);
+  }
+  return notes.join("\n\n");
+}
+
 async function runPublish(
   ctx: Ctx,
   claim: Claim,
-): Promise<"published" | "agent_done" | "failed" | "review_needed"> {
+): Promise<"published" | "agent_done" | "failed" | "review_needed" | "sync_conflict"> {
   const { d } = ctx;
   const t = claim.task;
   const fail = async (msg: string) => {
     await complete(ctx, claim.leaseId, "failed", msg);
     return "failed" as const;
   };
-  const approved = t.approvedSha;
-  if (!approved) return fail("没有批准的提交");
-  if (!t.githubRepo || !t.prNumber) return fail("任务没有 PR，无法合并");
+  const approved = t.approvedSha ?? t.mergeSha;
+  if (!approved) return fail("没有批准的提交，也没有已记录的合并提交");
+  if (!t.githubRepo) return fail("任务没有配置代码仓库，无法发布");
+  if (!t.prNumber && !t.mergeSha)
+    return fail("任务没有 PR，也没有已记录的合并提交，无法发布");
   const meta = t.sessionId ? d.store.getMeta(t.sessionId) : null;
   if (!meta) return fail("本机没有该任务的工作树记录，无法发布");
   const wt: Worktree = { path: meta.cwd, branch: meta.branch, base: meta.base };
   const repoDir = meta.repo;
-
-  // 1. 同步主分支并合并 PR：提交变了就回到待审核；只合并批准的那个提交
-  let merged;
+  let forge: Forge;
   try {
-    merged = await syncAndMerge({
-      forge: ctx.forge,
-      githubRepo: t.githubRepo,
-      repoDir,
-      wt,
-      mainBranch: t.mainRef,
-      prNumber: t.prNumber,
-      approvedSha: approved,
-    });
+    forge = await resolveForge(ctx, repoDir);
   } catch (e) {
-    return fail(`合并流程出错：${(e as Error).message.split("\n")[0]}`);
+    return fail((e as Error).message);
+  }
+
+  // 1. 同步主分支并合并 PR：提交变了就回到待审核；只合并批准的那个提交。
+  // 如果 PR 信息已经在恢复时被清掉，但合并提交有记录，就直接复用那条记录，不再要求创建 PR。
+  let merged: Awaited<ReturnType<typeof syncAndMerge>>;
+  if (!t.prNumber) {
+    try {
+      await forge.fetch(repoDir);
+    } catch (e) {
+      return fail(`读取主分支失败：${(e as Error).message.split("\n")[0]}`);
+    }
+    merged = { outcome: "merged", mergeSha: t.mergeSha! };
+  } else {
+    try {
+      merged = await syncAndMerge({
+        forge,
+        githubRepo: t.githubRepo,
+        repoDir,
+        wt,
+        mainBranch: t.mainRef,
+        prNumber: t.prNumber,
+        approvedSha: approved,
+      });
+    } catch (e) {
+      return fail(`合并流程出错：${(e as Error).message.split("\n")[0]}`);
+    }
+  }
+  if (merged.outcome === "sync_conflict") {
+    await complete(ctx, claim.leaseId, "sync_conflict", merged.detail);
+    return "sync_conflict";
   }
   if (merged.outcome === "review_needed") {
     await complete(ctx, claim.leaseId, "review_needed", merged.detail);
@@ -1131,17 +1238,33 @@ async function runPublish(
   }
   if (merged.outcome === "failed") return fail(merged.detail);
 
+  // 合并检查点：先让网关记下合并提交。即使随后守护进程重启、发布会话丢失，
+  // 任务详情仍能知道代码已经进主分支，恢复时走“重试发布”而不是重新创建 PR。
+  const checkpoint = await ctx.gw
+    .call("POST", `/api/daemon/leases/${claim.leaseId}/merged`, {
+      daemonId: ctx.daemonId,
+      mergeSha: merged.mergeSha,
+    })
+    .catch(() => ({ status: 0, data: {} }));
+  if (checkpoint.status !== 200)
+    ctx.log(`记录合并提交失败（${checkpoint.status}），继续发布`);
+
   // 2. 工作树同步到合并后的主分支，对原来的会话发“开始发布”，同一个智能体按 AGENTS.md 自己发布；成败交给人确认
   const sid = t.sessionId!;
   let result: "published" | "agent_done" | "failed";
   let output: string;
   try {
     await syncToMergedMain(wt, t.mainRef, merged.mergeSha);
+    const target = currentHead(wt.path);
+    if (!target) return fail("发布目标工作树没有有效的 HEAD");
+    const note = await drainPublishMessages(ctx, sid);
+    const prompt = `${publishPrompt(target, t.mainRef, merged.mergeSha)}${note ? `\n\n## 用户补充的发布要求\n${note}` : ""}`;
     const r = await runPublishInSession(
       d,
       sid,
-      publishPrompt(merged.mergeSha, t.mainRef),
+      prompt,
       PUBLISH_TIMEOUT_MS,
+      { resetWaiting: !!t.mergeSha },
     );
     if (r.state === "idle") {
       // 智能体明确说成功/失败就直接定；没有按约定给出结论才交给人确认
@@ -1155,12 +1278,19 @@ async function runPublish(
       output = v.summary || "（智能体没有给出说明）";
       if (v.verdict === "failure") output = `发布失败：${output}`;
     } else {
-      result = "failed";
-      output = `PR 已合并（${merged.mergeSha.slice(0, 8)}），但发布会话停在“${r.state}”：${tail(r.reply)}`;
+      // 已经合并、发布轮却没有正常结束：不能断言失败，也不能自动重跑；交给人确认线上结果。
+      result = "agent_done";
+      output = `PR 已合并（${merged.mergeSha.slice(0, 8)}），但发布会话停在“${r.state}”：${tail(r.reply)}\n\n请核对线上结果，确认发布成功；如果线上还是旧版本，点“重试发布”复用这个 PR 重新执行，不要重建 PR。`;
     }
   } catch (e) {
-    result = "failed";
-    output = `PR 已合并（${merged.mergeSha.slice(0, 8)}），但发布没有完成：${(e as Error).message.split("\n")[0]}`;
+    if (e instanceof PublishUnavailableError) {
+      // 守护进程重启后会话会变成 crashed/needs_you；这是“发布被中断”，不是代码或部署失败。
+      result = "agent_done";
+      output = `PR 已合并（${merged.mergeSha.slice(0, 8)}），但发布被中断：${e.message}\n\n请核对线上结果，确认发布成功；如果线上还是旧版本，点“重试发布”复用这个 PR 重新执行，不要重建 PR。`;
+    } else {
+      result = "failed";
+      output = `PR 已合并（${merged.mergeSha.slice(0, 8)}），但发布没有完成：${(e as Error).message.split("\n")[0]}`;
+    }
   }
   // 发布会话的最后几条事件要先回传，再收尾（工作树保留，供人查看和确认）
   const act = ctx.active.get(sid);
@@ -1168,7 +1298,7 @@ async function runPublish(
     await forwardEvents(ctx, sid, act).catch(() => undefined);
   await d.cancel(sid, { local: true }).catch(() => undefined);
   // 代码已经进了主分支：远端分支可以删（本地工作树保留，供人查看）
-  await ctx.forge
+  await forge
     .deleteRemoteBranch({ repoDir, branch: wt.branch })
     .catch(() => undefined);
   await complete(ctx, claim.leaseId, result, output);

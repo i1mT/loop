@@ -1,3 +1,5 @@
+import { requestUserId } from "@/lib/machine-access/request.ts";
+import { listProjects } from "@/lib/tasks.ts";
 import { getAllPools } from "@/lib/batch.ts";
 import { getDb } from "@/lib/db.ts";
 import { json, requireRole } from "@/lib/http.ts";
@@ -7,5 +9,8 @@ import { requestSpace } from "@/lib/spaces.ts";
 export async function GET(req: Request) {
   const denied = await requireRole(req, "admin");
   if (denied) return denied;
-  return json({ ok: true, pool: await getAllPools(await getDb(), requestSpace(req) ?? undefined) });
+  const spaceId = requestSpace(req) ?? undefined;
+  const allowed = new Set((await listProjects(false, spaceId, requestUserId(req))).map(project => project.id));
+  const pool = await getAllPools(await getDb(), spaceId);
+  return json({ ok: true, pool: { ...pool, items: pool.items.filter(item => allowed.has(item.project_id)) } });
 }

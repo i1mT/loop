@@ -38,10 +38,11 @@ export default function ProjectInstructions() {
     <Card>
       <form onSubmit={save} className="grid gap-4 p-4">
         <p className="max-w-2xl text-[13px] text-ink-2">写这个项目的背景、技术栈、约定和禁区。每个任务开始时，这段文字会作为“项目说明”放在任务内容之前一起发给智能体，对这个项目的所有任务都适用。</p>
+        {project.canManage===false&&<p className="text-sm text-ink-2">修改全局指令需要拥有全部绑定机器的使用权限。</p>}
         <Field label="全局指令" hint={`${text.length} / ${MAX}`}>
-          {(id) => <Textarea id={id} value={text} onChange={(e) => setText(e.target.value)} rows={14} maxLength={MAX} placeholder="例如：这是一个 Next.js 项目，用 pnpm；不要改 legacy/ 目录；提交信息用中文；样式沿用现有的 Tailwind 约定。" />}
+          {(id) => <Textarea disabled={project.canManage===false} id={id} value={text} onChange={(e) => setText(e.target.value)} rows={14} maxLength={MAX} placeholder="例如：这是一个 Next.js 项目，用 pnpm；不要改 legacy/ 目录；提交信息用中文；样式沿用现有的 Tailwind 约定。" />}
         </Field>
-        <SaveBar busy={busy} dirty={text !== saved} error={error} />
+        <SaveBar busy={busy} dirty={text !== saved} disabled={project.canManage===false} error={error} />
       </form>
     </Card>
   );

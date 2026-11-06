@@ -4,7 +4,7 @@ import Link from "next/link";
 import { use, useMemo, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Dialog } from "@/components/ui/dialog.tsx";
-import { ApiError, apiPost, mutate } from "@/lib/client-api.ts";
+import { ApiError, apiPost, mutate, useApi } from "@/lib/client-api.ts";
 import { Pipeline } from "@/components/task/pipeline.tsx";
 import { TaskActions } from "@/components/task/task-actions.tsx";
 import { ReviewCard } from "@/components/task/review-card.tsx";
@@ -18,6 +18,7 @@ import { shortSha, timeAgo } from "@/lib/format.ts";
 import { fold } from "@/lib/session-fold.ts";
 import { canCancel, EFFORT_LABEL, isFinished, SESSION_STATE_LABEL, stageInfo } from "@/lib/status.ts";
 import { useSession } from "@/lib/use-session.ts";
+import type { MachineItem } from "@/lib/types.ts";
 import { AgentName } from "@/components/agent/agent-icon.tsx";
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
@@ -31,7 +32,8 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
 
 export default function TaskLayout({ children, params }: { children: ReactNode; params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { data, error, loading, reload } = useSession(id);
+  const { data, error, loading, reload, hasMore, loadingOlder, loadOlder } = useSession(id);
+  const machines=useApi<{machines:MachineItem[]}>("/api/machines");
   const toast = useToast();
   const [cancelling, setCancelling] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
@@ -71,7 +73,7 @@ export default function TaskLayout({ children, params }: { children: ReactNode; 
   const closed = isFinished(task.stage);
 
   return (
-    <TaskProvider value={{ data, diffs, checks, activity, reload }}>
+    <TaskProvider value={{ data, diffs, checks, activity, reload, hasMore, loadingOlder, loadOlder }}>
       <PageHeader
         crumbs={
           <>
@@ -139,7 +141,7 @@ export default function TaskLayout({ children, params }: { children: ReactNode; 
       <div className="mb-5 flex flex-wrap items-center gap-x-3 gap-y-2">
         <Chip>
           <AgentName kind={task.agent} size={14} />
-          {task.machine_id ? ` @ ${task.machine_id}` : ""}
+          {task.machine_id ? ` @ ${machines.data?.machines.find(machine=>machine.id===task.machine_id)?.name??task.machine_id}` : ""}
         </Chip>
         {(task.model || task.effort) && (
           <Chip title="创建任务时确定的模型与思考程度">

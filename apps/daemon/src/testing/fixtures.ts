@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 // 测试用的一次性仓库与假智能体规格。仅在 *.test.ts 中使用。
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -28,5 +29,5 @@ export function makeRepo(): string {
 export const FAKE_SPEC: AgentSpec = {
   kind: "fake",
   command: process.execPath,
-  args: ["--experimental-strip-types", "--no-warnings", new URL("./fake-agent.ts", import.meta.url).pathname],
+  args: ["--experimental-strip-types", "--no-warnings", fileURLToPath(new URL("./fake-agent.ts", import.meta.url))],
 };

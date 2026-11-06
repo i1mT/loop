@@ -9,7 +9,7 @@
 - Cloudflare R2：反馈截图和任务附件。
 - 开发机器：daemon、Git、GitHub CLI、智能体和项目工具链。
 
-网关与 daemon 不需要位于同一台机器。一个 daemon 可以处理本机绑定的多个项目，一个项目指定执行机器与智能体。
+网关与 daemon 不需要位于同一台机器。一个 daemon 可以处理本机绑定的多个项目，一个项目可按顺序绑定多台机器，并分别设置仓库路径与智能体。
 
 ## 配置清单
 
@@ -18,7 +18,7 @@
 | `DATABASE_URL` | Worker secret / 开发 `.dev.vars` | Neon 数据库连接 |
 | `BETTER_AUTH_SECRET` | 同上 | 登录会话签名 |
 | `LOOP_ADMIN_TOKEN` | 同上及受保护的本机配置 | 脚本与本机转发网关访问 API |
-| `LOOP_DAEMON_TOKEN` | 同上及执行机器 | daemon 认证 |
+| `LOOP_DAEMON_TOKEN` | Worker secret，可选兼容配置 | 仅兼容已有旧机器；新机器使用一次性连接码换取独立令牌 |
 | `FEISHU_ENCRYPTION_KEY` | Worker secret | 32 字节 base64 的飞书凭证加密主密钥 |
 | `TYPESAFE_API_KEY` | 可选 Worker secret | 小问题规模判定；没有时直接创建任务 |
 | `LOOP_LOCAL` | Worker secret | 云端填 `{}`；本机转发模式由脚本生成 |
@@ -82,15 +82,15 @@ cd apps/web
 
 先在本机安装并认证需要使用的 CLI，再运行 daemon。项目依赖会提供 Claude/Codex ACP 适配器、Pi 适配器和 DeepSeek Harness；Grok、OpenCode、Pi 的主 CLI 需要在 PATH 上可用。
 
-```bash
-mkdir -p ~/.config/loop
-cp config/daemon.env.example ~/.config/loop/loop.env
-chmod 600 ~/.config/loop/loop.env
-# 编辑 loop.env，配置自己的网关地址和令牌。
-./scripts/start-daemon.sh
-```
+在网页「机器 → 添加机器」复制安装命令。安装器提供 macOS/Linux 便携包，包含 Node 和 ACP 依赖；Windows 当前使用 WSL2。连接码十分钟内有效且只能兑换一次，连接后的独立机器令牌保存在 `LOOPD_HOME/connection.json`，权限为 600。
 
-可以通过 `LOOP_CONFIG_PATH` 使用不同配置位置；通过 `LOOPD_MACHINE_ID` 设置固定机器 ID，通过 `LOOPD_HOME` 设置 daemon 数据目录。重启时应沿用原机器 ID 和原数据目录，否则无法恢复本机已有会话。
+机器默认独享，所有者可以向指定空间成员共享使用权限。不要把管理员 API 令牌或旧的全局 daemon 令牌发给使用者。
+
+源码维护者可以运行 `./scripts/start-daemon.sh`，已有 `connection.json` 时直接沿用；可选本机配置路径由 `LOOP_CONFIG_PATH` 指定，默认 `~/.config/loop/loop.env`。daemon 不继承数据库与应用主密钥。
+
+后台运行使用 `loopd start/stop/status`，日志与连接配置放在同一数据目录。重启和切换源码目录必须沿用原机器 ID 与 `LOOPD_HOME`（默认 `~/.loop-daemon`），否则不能恢复原会话。同一目录只能运行一个 daemon。
+
+便携包构建与上传见 [安装包说明](../scripts/daemon-release/README.md)。
 
 网页机器页会展示已发现的智能体。在具体智能体页面设置模型、思考程度；项目选择机器与智能体，任务创建时记录当时的配置。模型列表只在启动或手动刷新时探测。
 

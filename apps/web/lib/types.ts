@@ -23,6 +23,9 @@ export interface TaskItem {
   error: string | null;
   head_sha: string | null;
   approved_sha: string | null;
+  /** PR 合并提交；有值说明代码已经进主分支，恢复时应重试发布而不是重建 PR */
+  merge_sha?: string | null;
+  merged_at?: number | null;
   archived_at: number | null;
   created_at: number;
   updated_at: number;
@@ -54,6 +57,8 @@ export interface PoolItem {
 }
 
 export interface ProjectItem {
+  canManage?: boolean;
+  bindings?: import("./routing/bindings.ts").ProjectBinding[];
   id: string;
   name: string;
   main_ref: string;
@@ -83,6 +88,10 @@ export interface MachineAgent {
 }
 
 export interface MachineItem {
+  ownerId: string | null;
+  owned: boolean;
+  shared: boolean;
+  legacyAuth: boolean;
   id: string;
   name: string;
   os: string | null;

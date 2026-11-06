@@ -2,10 +2,30 @@ import type { FeishuSecrets } from "./bindings.ts";
 import { digest } from "./crypto.ts";
 export class FeishuApiError extends Error {
   readonly code: number;
-  constructor(code: number) {
-    super(`飞书操作失败（错误码 ${code}），请检查应用权限和目录授权`);
+  constructor(code: number, detail = "") {
+    super(describeError(code, detail));
     this.code = code;
   }
+}
+/** 从飞书返回的说明里取出缺失的权限，让用户知道该申请哪个 scope，而不是只看到错误码。 */
+function describeError(code: number, detail: string): string {
+  const required = /(?:is required|应用身份权限)[：:]\s*\[([^\]]+)\]/.exec(
+    detail,
+  )?.[1];
+  const scopes = required
+    ?.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  if (scopes?.length)
+    return `飞书操作失败（错误码 ${code}）：应用缺少权限 ${scopes.join("、")}，请在开放平台申请并发布版本后重试`;
+  if (
+    /not in (the )?(wiki|space)|不是知识库成员|无权限|permission denied|needs edit permission/i.test(
+      detail,
+    )
+  )
+    return `飞书操作失败（错误码 ${code}）：应用没有该知识库或文档的编辑权限，请把应用加入知识库成员并授予「可编辑」，或把父文档的协作者加上这个应用`;
+  return `飞书操作失败（错误码 ${code}），请检查应用权限和目录授权`;
 }
 interface Result<T> {
   code?: number;
@@ -116,7 +136,10 @@ export class FeishuClient {
     if (declared > 2_000_000) throw new Error("飞书响应超过读取限制");
     const payload = (await response.json()) as Result<T>;
     if (!response.ok || payload.code)
-      throw new FeishuApiError(payload.code ?? response.status);
+      throw new FeishuApiError(
+        payload.code ?? response.status,
+        typeof payload.msg === "string" ? payload.msg : "",
+      );
     return (payload.data ?? payload) as T;
   }
   private async accessToken(): Promise<string> {
@@ -134,10 +157,46 @@ export class FeishuClient {
     this.token = payload.tenant_access_token;
     return this.token;
   }
-  async reply(messageId: string, text: string, uuid: string): Promise<string> {
+  async listChats(
+    pageToken?: string,
+  ): Promise<{
+    chats: { id: string; name: string }[];
+    nextPageToken: string | null;
+  }> {
+    const params = new URLSearchParams({
+      page_size: "100",
+      sort_type: "ByActiveTimeDesc",
+    });
+    if (pageToken) params.set("page_token", pageToken);
+    const result = await this.request<{
+      items?: { chat_id: string; name: string }[];
+      has_more?: boolean;
+      page_token?: string;
+    }>(`im/v1/chats?${params}`);
+    return {
+      chats: (result.items ?? []).map((chat) => ({
+        id: chat.chat_id,
+        name: chat.name || "未命名群聊",
+      })),
+      nextPageToken: result.has_more ? result.page_token || null : null,
+    };
+  }
+  async reply(messageId: string, text: string, uuid: string, replyInThread = false): Promise<string> {
     const result = await this.request<{ message_id: string }>(
       `im/v1/messages/${encodeURIComponent(messageId)}/reply`,
-      { msg_type: "text", content: JSON.stringify({ text }), uuid },
+      { msg_type: "text", content: JSON.stringify({ text }), uuid, ...(replyInThread ? {reply_in_thread:true} : {}) },
+    );
+    return result.message_id;
+  }
+  async replyCard(
+    messageId: string,
+    card: unknown,
+    uuid: string,
+    replyInThread = false,
+  ): Promise<string> {
+    const result = await this.request<{ message_id: string }>(
+      `im/v1/messages/${encodeURIComponent(messageId)}/reply`,
+      { msg_type: "interactive", content: JSON.stringify(card), uuid, ...(replyInThread ? {reply_in_thread:true} : {}) },
     );
     return result.message_id;
   }
@@ -148,6 +207,18 @@ export class FeishuClient {
         receive_id: chatId,
         msg_type: "text",
         content: JSON.stringify({ text }),
+        uuid,
+      },
+    );
+    return result.message_id;
+  }
+  async sendCard(chatId: string, card: unknown, uuid: string): Promise<string> {
+    const result = await this.request<{ message_id: string }>(
+      "im/v1/messages?receive_id_type=chat_id",
+      {
+        receive_id: chatId,
+        msg_type: "interactive",
+        content: JSON.stringify(card),
         uuid,
       },
     );
@@ -165,13 +236,14 @@ export class FeishuClient {
     const nodes: WikiNode[] = [];
     do {
       const result = await this.request<{
-        items: WikiNode[];
+        items?: WikiNode[];
         has_more: boolean;
         page_token?: string;
       }>(
         `wiki/v2/spaces/${encodeURIComponent(spaceId)}/nodes?parent_node_token=${encodeURIComponent(parent)}&page_size=50${page ? `&page_token=${encodeURIComponent(page)}` : ""}`,
       );
-      nodes.push(...result.items);
+      // 目录为空时飞书只返回 has_more/page_token，不带 items 字段。
+      nodes.push(...(result.items ?? []));
       page = result.has_more ? (result.page_token ?? "") : "";
       if (nodes.length > 2500)
         throw new Error("目录内容过多，请分年度整理后重试");
@@ -286,7 +358,12 @@ export class FeishuClient {
       type: (response.headers.get("content-type") ?? "").split(";")[0],
     };
   }
-  async checkConnection(parent: string): Promise<WikiNode> {
-    return this.resolveWiki(parent);
+  async checkConnection(
+    parent: string,
+  ): Promise<WikiNode & { children: number }> {
+    const node = await this.resolveWiki(parent);
+    // 顺带读一次子节点：技术方案要写入这个目录，读取权限不足时这里就能发现。
+    const children = await this.listWiki(node.space_id, node.node_token);
+    return { ...node, children: children.length };
   }
 }

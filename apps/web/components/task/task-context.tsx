@@ -16,6 +16,9 @@ export interface TaskCtx {
   checks: Extract<Item, { type: "check" }>[];
   activity: ActivityRow[];
   reload: () => void;
+  hasMore: boolean;
+  loadingOlder: boolean;
+  loadOlder: () => void;
 }
 
 const Ctx = createContext<TaskCtx | null>(null);

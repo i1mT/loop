@@ -1,4 +1,6 @@
 "use client";
+import { projectHasMachine, projectBindings } from "@/lib/routing/view.ts";
+import { MachineAccessPanel } from "@/components/machine/access-panel.tsx";
 import clsx from "clsx";
 import { Check, ChevronRight, X } from "lucide-react";
 import Link from "next/link";
@@ -27,7 +29,7 @@ export default function MachinePage({ params }: { params: Promise<{ id: string }
   const toast = useToast();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
-  const mine = (projects.data?.projects ?? []).filter((p) => p.machine_id === id);
+  const mine = (projects.data?.projects ?? []).filter((p) => projectHasMachine(p,id));
 
   if (machines.error && !machines.data) return <ErrorState message={machines.error.message} onRetry={machines.reload} />;
   if (machines.loading)
@@ -68,6 +70,7 @@ export default function MachinePage({ params }: { params: Promise<{ id: string }
         }
       />
 
+      <MachineAccessPanel machine={m} />
       <h2 className="mb-2 text-[15px] font-semibold">智能体</h2>
       <Card className="mb-6 overflow-hidden">
         {m.agents.length === 0 ? (
@@ -110,7 +113,7 @@ export default function MachinePage({ params }: { params: Promise<{ id: string }
                   <span>
                     {p.name} <span className="num text-xs text-ink-2">{p.github_repo}</span>
                   </span>
-                  <span className="text-xs text-ink-2"><AgentName kind={p.agent} size={14} /></span>
+                  <span className="text-xs text-ink-2"><span className="inline-flex items-center gap-1">{projectBindings(p).filter(binding=>binding.machineId===id).map(binding=><AgentName key={binding.agent} kind={binding.agent} size={14} />)}</span></span>
                 </Link>
               </li>
             ))}
@@ -118,6 +121,7 @@ export default function MachinePage({ params }: { params: Promise<{ id: string }
         )}
       </Card>
 
+      {m.owned && <>
       <h2 className="mb-2 mt-6 text-[15px] font-semibold">删除机器</h2>
       <Card className="p-4">
         <p className="text-[13px] text-ink-2">
@@ -137,6 +141,7 @@ export default function MachinePage({ params }: { params: Promise<{ id: string }
         </div>
       </Card>
 
+      </>}
       <Dialog open={confirming} onOpenChange={setConfirming} title={`删除“${m.name}”？`} description="只删除登记，不会动机器上的文件。守护进程之后再连接会重新登记。">
         <div className="flex justify-end gap-2">
           <Button onClick={() => setConfirming(false)}>取消</Button>

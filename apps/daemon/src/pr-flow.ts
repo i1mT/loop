@@ -66,6 +66,7 @@ export async function publishBranch(ctx: PublishCtx): Promise<PublishedBranch | 
 export type MergeOutcome =
   | { outcome: "merged"; mergeSha: string }
   | { outcome: "review_needed"; detail: string }
+  | { outcome: "sync_conflict"; detail: string }
   | { outcome: "failed"; detail: string };
 
 export interface MergeCtx {
@@ -81,7 +82,7 @@ export interface MergeCtx {
 
 /**
  * 发布前的同步与合并：
- * 1. 拉取并把任务分支同步到最新主分支（别的任务可能刚合并）；提交变了 → 强推更新 PR，并要求重新审核
+ * 1. 拉取并把最新主分支合并到任务分支（别的任务可能刚合并）；提交变了 → 推送更新 PR，并要求重新审核
  * 2. 只合并批准的那个提交（--match-head-commit）
  * 3. 返回合并后主分支上的提交
  */
@@ -99,9 +100,15 @@ export async function syncAndMerge(ctx: MergeCtx): Promise<MergeOutcome> {
 
   const sync = await syncWithMain(ctx.wt, ctx.repoDir, `origin/${ctx.mainBranch}`);
   if (sync.state === "dirty") return { outcome: "failed", detail: "工作区有未提交的改动，无法确认合并的内容" };
-  if (sync.state === "conflict") return { outcome: "review_needed", detail: `主分支已前进，同步冲突（${sync.detail}），需要重新审核` };
+  if (sync.state === "conflict") return { outcome: "sync_conflict", detail: [
+    `批准合并时发现主分支 ${ctx.mainBranch} 已前进，自动合并发生冲突；本次合并已中止，原有提交保持不变。`,
+    sync.detail,
+    `请在当前任务工作树中执行 git fetch origin，再用 git merge --no-edit origin/${ctx.mainBranch} 同步主分支。`,
+    "保留已有的合并提交与冲突解决结果，不要使用 rebase，不要丢弃任一方的有效改动。解决冲突后完成提交，按照项目约定验证，并说明解决了哪些冲突。",
+    "这次只处理主分支同步，不要合并 PR，不要发布。守护进程会更新原 PR，交给用户重新审核。若确实需要人工信息，请明确说明原因。",
+  ].join("\n\n") };
   const head = (await git(ctx.wt.path, "rev-parse", "HEAD")).trim();
-  if (sync.state === "rebased") await ctx.forge.push(ctx.wt.path, ctx.wt.branch, { force: true });
+  if (sync.state === "merged") await ctx.forge.push(ctx.wt.path, ctx.wt.branch, { force: true });
   if (head !== ctx.approvedSha) {
     return { outcome: "review_needed", detail: `合并前提交已变（${ctx.approvedSha.slice(0, 8)} → ${head.slice(0, 8)}），已同步主分支并更新 PR，需要重新审核` };
   }

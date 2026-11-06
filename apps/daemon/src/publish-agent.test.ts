@@ -4,7 +4,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createWorktree } from "./worktree.ts";
 import { LoopDaemon } from "./daemon.ts";
-import { publishPrompt, runPublishInSession, syncToMergedMain } from "./publish-agent.ts";
+import { publishPrompt, PublishUnavailableError, runPublishInSession, syncToMergedMain } from "./publish-agent.ts";
 import { FAKE_SPEC, git, makeRepo, tempDir } from "./testing/fixtures.ts";
 
 test("发布前把工作树对齐到合并后的主分支（任务分支的提交被主分支取代）", async () => {
@@ -37,6 +37,17 @@ test("发布提示：指向 AGENTS.md，不猜发布方式", () => {
   assert.match(p, /AGENTS\.md/);
   assert.match(p, /不要猜/);
   assert.match(p, /abcdef12/);
+  assert.match(p, /可以自行解决/);
+  assert.match(p, /不可逆的数据删除\/覆盖/);
+  assert.match(p, /需要人工/);
+});
+
+test("主分支已前进时，发布目标是当前 HEAD 而不是旧的合并提交", () => {
+  const p = publishPrompt("e8256dfb1234", "main", "42e9b0f1b981");
+  assert.match(p, /HEAD e8256dfb/);
+  assert.match(p, /包含本任务的合并提交 42e9b0f1/);
+  assert.match(p, /发布目标是当前 HEAD（e8256dfb1234）/);
+  assert.doesNotMatch(p, /不再在任务分支上/);
 });
 
 const daemons: LoopDaemon[] = [];
@@ -59,6 +70,30 @@ test("对原来的会话发“开始发布”：同一个会话收到消息、�
   const again = await runPublishInSession(d, id, "再发布", 30_000);
   assert.equal(again.state, "idle");
   assert.ok(again.reply.length > 0);
+});
+
+test("发布会话不在空闲状态：给出可识别的中断错误，供网关转成待确认发布", async () => {
+  const d = new LoopDaemon({ dataDir: tempDir("loopd-pub-"), specs: { fake: FAKE_SPEC } });
+  daemons.push(d);
+  const id = await d.start({ taskId: "p4", repo: makeRepo(), agent: "fake", prompt: "你好" });
+  await d.waitFor(id);
+  d.store.updateMeta(id, { state: "needs_you" });
+  await assert.rejects(
+    () => runPublishInSession(d, id, "发布吧", 30_000),
+    (e: unknown) => e instanceof PublishUnavailableError && e.state === "needs_you",
+  );
+});
+
+test("人重试已合并的发布：重启留下的 crashed/needs_you 不再拦住发布", async () => {
+  const d = new LoopDaemon({ dataDir: tempDir("loopd-pub-"), specs: { fake: FAKE_SPEC } });
+  daemons.push(d);
+  const id = await d.start({ taskId: "p5", repo: makeRepo(), agent: "fake", prompt: "你好" });
+  await d.waitFor(id);
+  await d.cancel(id);
+  d.store.updateMeta(id, { state: "needs_you" });
+  const r = await runPublishInSession(d, id, "重试发布", 30_000, { resetWaiting: true });
+  assert.equal(r.state, "idle");
+  assert.ok(r.reply.length > 0);
 });
 
 test("发布结论：取最后一条“发布结果：成功/失败”，没有就是 unclear（不猜）", async () => {

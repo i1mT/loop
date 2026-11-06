@@ -6,7 +6,7 @@ import { migrate } from "./migrations.ts";
 import { useDb } from "./db.ts";
 import { deleteMachine, hello, listMachines, pendingProbes, requestProbe, setAgentConfig, validateBinding } from "./machines.ts";
 import { createProject, createTask, getTask, setStage, listProjects, listTasks, restartTask, setProjectArchived, setTaskArchived, updateProject, updateTask } from "./tasks.ts";
-import { claim, confirmPublish, ingestEvents, overrideOutcome, republishTask, restoreTask } from "./daemon-api.ts";
+import { claim, completePublish, approveTask, reportHead, confirmPublish, ingestEvents, overrideOutcome, republishTask, restoreTask } from "./daemon-api.ts";
 import { randomUUID } from "node:crypto";
 import { authenticateApiKey, createApiKey, ensureSdkSource, getSourceByKey, listApiKeys, rateLimited, revokeApiKey, rotateSdkSecret, updateSdkSource } from "./integrations.ts";
 
@@ -140,7 +140,7 @@ test("重复发送同一批事件不会重新触发阶段转换（超时重试�
   assert.equal(Number(n!.n), 4, "事件只保留一份");
 });
 
-test("智能体配置：模型与思考程度在智能体上设置，项目只选智能体，任务创建时取当时的配置", { skip }, async () => {
+test("智能体配置：默认模型与思考程度在机器上设置，任务创建时取当时配置（旧项目入口仍兼容）", { skip }, async () => {
   const d = await setup();
   const M = `${run}-m4`;
   const withOptions = [
@@ -169,7 +169,7 @@ test("智能体配置：模型与思考程度在智能体上设置，项目只�
   await hello(d, { machineId: M, name: "m4", agents: withOptions });
   assert.equal((await listMachines(d)).find((m) => m.id === M)!.agents.find((a) => a.kind === "grok")!.defaultModel, "grok-4.7", "hello 不覆盖配置");
 
-  // 项目只选择智能体，并带全局指令
+  // 项目选择智能体（旧入口仍兼容），并带全局指令
   const p = await createProject({ name: `u-${run}`, machineId: M, agent: "grok", githubRepo: "o/r", instructions: "  用 pnpm，不要改 legacy/。 " });
   assert.equal(p.instructions, "用 pnpm，不要改 legacy/。");
   // 任务：取该智能体当前的配置；改配置只影响之后的任务
@@ -409,4 +409,37 @@ test("人工恢复与重新创建 PR：取消的任务改回待审核后被守�
   await d.prepare(`DELETE FROM projects WHERE id=?`).bind(p.id).run();
   await d.prepare(`DELETE FROM machine_agents WHERE machine_id=?`).bind(M).run();
   await d.prepare(`DELETE FROM machines WHERE id=?`).bind(M).run();
+});
+
+
+test("发布同步冲突：原会话持久接收修复要求，保留租约与 PR，重复回传不重复投递", { skip }, async () => {
+  const d = await setup();
+  const M = `${run}-m4`;
+  await hello(d, { machineId: M, name: "m4", os: "darwin", agents });
+  const project = await createProject({ name: `conflict-${run}`, machineId: M, agent: "grok", githubRepo: "o/r" });
+  const t = await createTask({ projectId: project.id, title: "处理主分支冲突" });
+  const sid = randomUUID();
+  const lease = randomUUID();
+  await d.prepare(`INSERT INTO sessions(id,task_id,agent,state,created_at,updated_at) VALUES(?,?,'grok','idle',?,?)`).bind(sid,t.id,Date.now(),Date.now()).run();
+  await d.prepare(`INSERT INTO leases(id,task_id,daemon_id,expires_at,released) VALUES(?,?,?,?,0)`).bind(lease,t.id,M,Date.now()+60000).run();
+  await d.prepare(`UPDATE tasks SET stage='publishing',head_sha=?,approved_sha=?,pr_number=7,pr_url='https://fake/pr/7' WHERE id=?`).bind('a'.repeat(40),'a'.repeat(40),t.id).run();
+  const prompt = "合并主分支并解决冲突，更新原 PR 后等待重新审核";
+  assert.equal((await completePublish(lease,M,"sync_conflict",prompt)).ok,true);
+  const repaired = (await getTask(t.id))!;
+  assert.equal(repaired.stage,"running");
+  assert.equal(repaired.head_sha,null);
+  assert.equal(repaired.approved_sha,null);
+  assert.equal(repaired.pr_number,7);
+  assert.equal((await approveTask(t.id,"admin")).ok,false,"未处理冲突不能再次批准旧提交");
+  assert.equal((await completePublish(lease,M,"sync_conflict",prompt)).status,409);
+  const inbox = (await d.prepare(`SELECT session_id,body,delivered_at FROM inbox WHERE session_id=?`).bind(sid).all<{session_id:string;body:string;delivered_at:number|null}>()).results;
+  assert.deepEqual(inbox,[{session_id:sid,body:prompt,delivered_at:null}]);
+  const resumed = await claim(M);
+  assert.equal(resumed!.leaseId,lease,"重启接管继续使用原租约");
+  assert.equal(resumed!.task.sessionId,sid);
+  assert.equal(resumed!.task.job,"work");
+  assert.equal((await reportHead(sid,lease,M,'b'.repeat(40))).ok,true);
+  await setStage(t.id,"reviewing");
+  assert.equal((await approveTask(t.id,"admin")).ok,true);
+  assert.equal((await getTask(t.id))!.approved_sha,'b'.repeat(40));
 });

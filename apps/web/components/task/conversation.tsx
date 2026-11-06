@@ -1,7 +1,7 @@
 "use client";
 import clsx from "clsx";
 import { Brain, ChevronRight, Send, Terminal, Wrench } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button.tsx";
@@ -143,7 +143,7 @@ function Items({ items, onAnswer, busy, answering }: { items: Item[]; onAnswer: 
   return <>{out}</>;
 }
 
-export function Conversation({ taskId, events, pending, waiting, reload, readOnly, iterate }: { taskId: string; events: Ev[]; pending: Pending[]; waiting: boolean; reload: () => void; readOnly?: boolean; /** 已发布：发送即开始新一轮（同一个会话接着改，新开 PR，再次发布） */ iterate?: boolean }) {
+export function Conversation({ taskId, events, pending, waiting, reload, readOnly, iterate, hasMore, loadingOlder, loadOlder }: { taskId: string; events: Ev[]; pending: Pending[]; waiting: boolean; reload: () => void; readOnly?: boolean; /** 已发布：发送即开始新一轮（同一个会话接着改，新开 PR，再次发布） */ iterate?: boolean; hasMore: boolean; loadingOlder: boolean; loadOlder: () => void }) {
   const toast = useToast();
   const { items } = useMemo(() => fold(events), [events]);
   const [text, setText] = useState("");
@@ -151,11 +151,26 @@ export function Conversation({ taskId, events, pending, waiting, reload, readOnl
   const [answering, setAnswering] = useState<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const loadingOlderRef = useRef(false);
+  const prevHeight = useRef<number | null>(null);
 
   useEffect(() => {
     const el = box.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [items.length, pending.length]);
+
+  // 加载更早的消息后保持原来的阅读位置，不把用户甩到底部。
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (loadingOlderRef.current && el && prevHeight.current !== null)
+      el.scrollTop += el.scrollHeight - prevHeight.current;
+    loadingOlderRef.current = false;
+    prevHeight.current = null;
+  }, [events.length]);
+
+  useEffect(() => {
+    if (!loadingOlder) loadingOlderRef.current = false;
+  }, [loadingOlder]);
 
   async function send() {
     if (!text.trim()) return;
@@ -197,10 +212,20 @@ export function Conversation({ taskId, events, pending, waiting, reload, readOnl
         onScroll={(e) => {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          if (el.scrollTop < 80 && hasMore && !loadingOlder && !loadingOlderRef.current) {
+            loadingOlderRef.current = true;
+            prevHeight.current = el.scrollHeight;
+            loadOlder();
+          }
         }}
         className="grid max-h-[60dvh] min-h-48 content-start gap-3 overflow-y-auto px-1 py-4"
         aria-live="polite"
       >
+        {hasMore && (
+          <p className="py-1 text-center text-xs text-ink-3">
+            {loadingOlder ? "正在加载更早的消息…" : "向上滚动加载更早的消息"}
+          </p>
+        )}
         {items.length === 0 ? <p className="py-10 text-center text-sm text-ink-2">还没有会话内容。机器领取任务后，智能体的输出会实时显示在这里。</p> : <Items items={items} onAnswer={answer} busy={busy || pending.some((p) => p.kind === "decision")} answering={answering} />}
         {pending.map((p) => (
           <p key={p.id} className="justify-self-end text-xs text-ink-3">

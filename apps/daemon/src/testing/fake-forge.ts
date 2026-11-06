@@ -126,6 +126,11 @@ export class FakeForge implements Forge {
     return { state: pr.state, mergeSha: pr.mergeSha };
   }
 
+  async lastPrNumber(opts: { branch: string }): Promise<number | null> {
+    const list = this.prs.filter((p) => p.head === opts.branch);
+    return list.length ? list[list.length - 1].number : null;
+  }
+
   async deleteRemoteBranch(opts: { repoDir: string; branch: string }): Promise<void> {
     try {
       g(opts.repoDir, "push", "origin", "--delete", opts.branch);

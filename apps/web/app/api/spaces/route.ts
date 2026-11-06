@@ -1,3 +1,5 @@
+import { requestUserId } from "@/lib/machine-access/request.ts";
+import { canUseMachine } from "@/lib/machine-access/policy.ts";
 import { fail, json, readJson, requireRole } from "@/lib/http.ts";
 import { getDb } from "@/lib/db.ts";
 import { sessionUser } from "@/lib/auth-server.ts";
@@ -26,9 +28,9 @@ export async function GET(req: Request) {
   const current = requestSpace(req);
   const inSpace = superAdmin || spaces.some((s) => s.id === current) || !userId;
   const members = current && inSpace ? await listMembers(db, current) : [];
-  const machines = current && inSpace ? await listMachines(db, current) : [];
+  const machines = current && inSpace ? await listMachines(db, current, requestUserId(req)) : [];
   const available = superAdmin && current && current !== "space_none"
-    ? (await listMachines(db)).filter((m) => !machines.some((x) => x.id === m.id)).map((m) => ({ id: m.id, name: m.name, online: m.online }))
+    ? (await listMachines(db, current, requestUserId(req))).filter((m) => !machines.some((x) => x.id === m.id)).map((m) => ({ id: m.id, name: m.name, online: m.online }))
     : [];
   return json({ ok: true, spaces, current, members, available, super: superAdmin });
 }
@@ -67,7 +69,7 @@ export async function PUT(req: Request) {
     return r.ok ? json({ ok: true }) : fail(400, r.error);
   }
   if (body?.machineId) {
-    const m = await db.prepare(`SELECT id FROM machines WHERE id=?`).bind(body.machineId).first();
+    const m = await canUseMachine(db, body.machineId, gate.userId, spaceId, true);
     if (!m) return fail(404, "机器不存在");
     await linkMachine(db, spaceId, body.machineId);
     return json({ ok: true });

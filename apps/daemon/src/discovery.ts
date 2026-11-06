@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 // 发现本机装了哪些智能体工具：版本、是否具备 ACP 入口、本机的 Claude 历史会话（只读）。
 // 只读取，不修改任何文件；每个探测都有超时，单个失败不影响其它。
 import { execFile } from "node:child_process";
@@ -31,7 +32,7 @@ async function probe(bin: string, args: string[]): Promise<{ ok: boolean; out: s
 
 /** 探测支持的智能体工具：claude、codex、grok、opencode、pi、dsh（DeepSeek Harness）。 */
 export async function discoverAgents(): Promise<AgentDiscovery[]> {
-  const local = (name: string) => new URL(`../node_modules/.bin/${name}`, import.meta.url).pathname;
+  const local = (name: string) => fileURLToPath(new URL(`../node_modules/.bin/${name}`, import.meta.url));
   const checks: { kind: string; bin: string; version: string[]; acp: () => Promise<boolean>; note?: string }[] = [
     {
       kind: "claude",

@@ -23,7 +23,7 @@ export async function POST(req: Request) {
     const node = await client.checkConnection(wikiToken(binding.wiki_url));
     return json({
       ok: true,
-      message: `已经连接，可以读取目录“${node.title}”。创建和编辑权限将在首次同步时检查。`,
+      message: `已经连接，可以读取目录“${node.title}”（${node.children} 个子文档）。创建文档需要应用具备 wiki:wiki 权限并加入知识库成员，会在首次同步时检查。`,
     });
   } catch (e) {
     return fail(400, e instanceof Error ? e.message : "连接失败");

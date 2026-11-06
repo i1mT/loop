@@ -15,6 +15,12 @@ export interface Binding {
   wiki_url: string;
   default_project_id: string | null;
   notification_chat_id: string | null;
+  notification_chat_name?: string | null;
+  callback_verified_at?: number | null;
+  tenant_verified_at?: number | null;
+  last_event_at?: number | null;
+  tenant_mismatch_at?: number | null;
+  tenant_mismatch_key?: string | null;
   enabled: number;
   created_at: number;
   updated_at: number;
@@ -24,10 +30,12 @@ export interface BindingInput {
   appSecret?: string;
   verificationToken?: string;
   encryptKey?: string;
-  tenantKey: string;
+  /** 兼容旧客户端；企业归属由已验证事件自动记录，不接受手动覆盖。 */
+  tenantKey?: string;
   wikiUrl: string;
   defaultProjectId?: string | null;
   notificationChatId?: string | null;
+  notificationChatName?: string | null;
   enabled: boolean;
 }
 export function wikiToken(url: string): string {
@@ -82,8 +90,8 @@ export async function saveBinding(
 ): Promise<Binding> {
   const previous = await getBinding(db, spaceId);
   const id = previous?.id ?? crypto.randomUUID();
-  if (!/^cli_[A-Za-z0-9]+$/.test(input.appId) || !input.tenantKey?.trim())
-    throw new Error("请填写正确的 App ID 和企业标识");
+  if (!/^cli_[A-Za-z0-9]+$/.test(input.appId))
+    throw new Error("请从企业自建应用的「凭证与基础信息」复制正确的 App ID");
   wikiToken(input.wikiUrl);
   if (previous && previous.app_id !== input.appId)
     throw new Error("更换应用需要新建空间绑定，避免把旧任务发送到其他机器人");
@@ -106,20 +114,37 @@ export async function saveBinding(
       .first();
     if (!project) throw new Error("默认项目不属于当前空间或已归档");
   }
+  const notificationChatId = input.notificationChatId?.trim() || null;
+  if (notificationChatId && !/^oc_[A-Za-z0-9]+$/.test(notificationChatId))
+    throw new Error("请选择机器人已经加入的通知群");
+  const notificationChatName = notificationChatId
+    ? input.notificationChatName?.trim().slice(0, 120) ||
+      (notificationChatId === previous?.notification_chat_id
+        ? previous.notification_chat_name
+        : null)
+    : null;
+  const callbackVerifiedAt =
+    old &&
+    old.verificationToken === secrets.verificationToken &&
+    old.encryptKey === secrets.encryptKey
+      ? (previous?.callback_verified_at ?? null)
+      : null;
   const time = Date.now();
   await db
     .prepare(
-      `INSERT INTO space_feishu_bindings(id,space_id,app_id,tenant_key,secrets,wiki_url,default_project_id,notification_chat_id,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(space_id) DO UPDATE SET tenant_key=EXCLUDED.tenant_key,secrets=EXCLUDED.secrets,wiki_url=EXCLUDED.wiki_url,default_project_id=EXCLUDED.default_project_id,notification_chat_id=EXCLUDED.notification_chat_id,enabled=EXCLUDED.enabled,updated_at=EXCLUDED.updated_at`,
+      `INSERT INTO space_feishu_bindings(id,space_id,app_id,tenant_key,secrets,wiki_url,default_project_id,notification_chat_id,notification_chat_name,callback_verified_at,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(space_id) DO UPDATE SET secrets=EXCLUDED.secrets,wiki_url=EXCLUDED.wiki_url,default_project_id=EXCLUDED.default_project_id,notification_chat_id=EXCLUDED.notification_chat_id,notification_chat_name=EXCLUDED.notification_chat_name,callback_verified_at=EXCLUDED.callback_verified_at,enabled=EXCLUDED.enabled,updated_at=EXCLUDED.updated_at`,
     )
     .bind(
       id,
       spaceId,
       input.appId,
-      input.tenantKey.trim(),
+      previous?.tenant_key ?? "",
       await seal(secrets, key, id),
       input.wikiUrl,
       input.defaultProjectId || null,
-      input.notificationChatId?.trim() || null,
+      notificationChatId,
+      notificationChatName,
+      callbackVerifiedAt,
       input.enabled ? 1 : 0,
       time,
       time,
@@ -132,9 +157,15 @@ export function bindingView(binding: Binding, origin: string) {
     id: binding.id,
     appId: binding.app_id,
     tenantKey: binding.tenant_key,
+    tenantVerified: !!binding.tenant_verified_at,
+    callbackVerifiedAt: binding.callback_verified_at ?? null,
+    lastEventAt: binding.last_event_at ?? null,
+    tenantMismatchAt: binding.tenant_mismatch_at ?? null,
+    tenantMismatchKey: binding.tenant_mismatch_key ?? null,
     wikiUrl: binding.wiki_url,
     defaultProjectId: binding.default_project_id,
     notificationChatId: binding.notification_chat_id,
+    notificationChatName: binding.notification_chat_name ?? null,
     enabled: !!binding.enabled,
     hasSecrets: true,
     callbackUrl: `${origin}/api/feishu/webhook/${binding.id}`,

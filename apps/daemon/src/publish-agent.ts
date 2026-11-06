@@ -10,10 +10,17 @@ export async function syncToMergedMain(wt: Worktree, mainBranch: string, mergeSh
   if (!ok) throw new Error(`${mainBranch} 上没有合并提交 ${mergeSha.slice(0, 8)}，无法发布`);
 }
 
-export function publishPrompt(mergeSha: string, mainBranch: string): string {
+export function publishPrompt(targetSha: string, mainBranch: string, mergedSha = targetSha): string {
+  const target = targetSha.slice(0, 8);
+  const merged = mergedSha.slice(0, 8);
   return [
-    `PR 已合并到 ${mainBranch}（合并提交 ${mergeSha.slice(0, 8)}）。当前工作目录已经同步为最新的 ${mainBranch}，不再在任务分支上。`,
+    targetSha === mergedSha
+      ? `PR 已合并到 ${mainBranch}（合并提交 ${merged}）。当前工作目录已经同步为最新的 ${mainBranch}，不再在任务分支上。`
+      : `当前工作目录已经同步为最新的 ${mainBranch}（HEAD ${target}），其中包含本任务的合并提交 ${merged}。分支名可能仍是任务分支，以当前 HEAD 为准。`,
+    `发布目标是当前 HEAD（${targetSha}）。部署确认号、版本号都使用这个完整提交，不要使用更早的合并提交。`,
     "现在请把它发布到生产环境：阅读项目 AGENTS.md（以及它引用的文档）里关于部署/发布的约定，按约定执行。不要改动代码、不要提交。",
+    "发布过程中遇到可以自行解决的问题（例如测试失败、构建失败、数据库迁移冲突、配置位置、依赖或临时服务状态），请直接排查并修复，然后继续发布，不要因为一次失败就停下。只有涉及不可逆的数据删除/覆盖、可能造成重大线上影响，或确实缺少只有人才能提供的信息时，才停下来。",
+    "如果必须停下，请在最后一行写「发布结果：失败（需要人工：具体需要什么）」，不要只写“失败了”就结束。",
     "注意：这是个独立的工作树，被 git 忽略的本地配置文件（如 .env）不在这里；部署需要的令牌和配置请按 AGENTS.md 写明的固定位置读取。",
     "如果 AGENTS.md 里找不到发布方式，不要猜，直接说明缺什么并结束。",
     "结束时先用几句话说明：做了什么、线上地址或版本、有没有失败的步骤；最后另起一行，只写下面两种之一（系统据此判定，不要改措辞）：",
@@ -29,11 +36,39 @@ export interface PublishRun {
   state: string;
 }
 
-/** 对已有会话发一条消息并等这一轮结束（会话没在运行就先恢复）。 */
-export async function runPublishInSession(d: LoopDaemon, sid: string, prompt: string, timeoutMs: number): Promise<PublishRun> {
-  if (!d.isLive(sid)) await d.resume(sid);
-  const before = await d.waitFor(sid, ["idle", "needs_you", "failed", "cancelled", "crashed", "ended"], 30_000);
-  if (before.state !== "idle") throw new Error(`会话当前状态是 ${before.state}，不能开始发布`);
+/** 会话没有停在空闲状态（常见于守护进程重启把会话标成 crashed/needs_you）：发布无法开始。 */
+export class PublishUnavailableError extends Error {
+  readonly state: string;
+  constructor(state: string) {
+    super(`会话当前状态是 ${state}，不能开始发布`);
+    this.name = "PublishUnavailableError";
+    this.state = state;
+  }
+}
+
+/** 对已有会话发一条消息并等这一轮结束（会话没在运行就先恢复）。
+ * resetWaiting 仅用于人明确重试一个已经合并的发布：重启或中断留下的 crashed/needs_you
+ * 不应再拦住这次发布，但仍在运行的会话（可能有真实权限请求）不重置。
+ */
+export async function runPublishInSession(
+  d: LoopDaemon,
+  sid: string,
+  prompt: string,
+  timeoutMs: number,
+  options: { resetWaiting?: boolean } = {},
+): Promise<PublishRun> {
+  const wasLive = d.isLive(sid);
+  if (!wasLive) await d.resume(sid);
+  let before = await d.waitFor(sid, ["idle", "needs_you", "failed", "cancelled", "crashed", "ended"], 30_000);
+  if (
+    options.resetWaiting &&
+    !wasLive &&
+    ["crashed", "needs_you"].includes(before.state)
+  ) {
+    d.resetForPublish(sid);
+    before = await d.waitFor(sid, ["idle"], 10_000);
+  }
+  if (before.state !== "idle") throw new PublishUnavailableError(before.state);
   const mark = d.store.lastSeq(sid);
   d.reply(sid, prompt);
   const end = await d.waitFor(sid, ["idle", "needs_you", "failed", "cancelled", "crashed", "ended"], timeoutMs);

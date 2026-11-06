@@ -1,6 +1,6 @@
 {
   "name": "@loop/daemon",
-  "version": "0.0.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,13 +14,19 @@
     "@agentclientprotocol/sdk": "^2.0.0",
     "@deepseek-ai/dsh": "0.2.1-rc.2",
     "@loop/core": "workspace:*",
-    "pi-acp": "0.0.34"
+    "pi-acp": "0.0.34",
+    "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
+    "@types/proper-lockfile": "^4.1.4",
     "typescript": "^7.0.2"
   },
   "bin": {
     "loopd": "./dist/cli.js"
-  }
+  },
+  "files": [
+    "dist",
+    "prompts"
+  ]
 }

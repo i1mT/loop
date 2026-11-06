@@ -89,7 +89,7 @@ test("最常见路径：批准的提交被合并，主分支历史只来自合�
   assert.match(log[0], /Fix the title \(#1\)/);
 });
 
-test("审核期间主分支前进：自动 rebase 并更新 PR，但必须重新审核，不会直接合并", async () => {
+test("审核期间主分支前进：自动 merge 并更新 PR，但必须重新审核，不会直接合并", async () => {
   const { forge, wt, repoDir, ctx } = await setup();
   const h = commitFile(wt, "a.txt", "hello\nchange\n", "c1");
   const p = await publishBranch(ctx());
@@ -106,17 +106,31 @@ test("审核期间主分支前进：自动 rebase 并更新 PR，但必须重新
   assert.equal(r2.outcome, "merged");
 });
 
-test("主分支改了同一行：冲突时要求重新审核，分支保持原样且工作区干净", async () => {
+test("主分支改了同一行：冲突交回原会话处理，不能重复要求批准", async () => {
   const { forge, wt, repoDir, ctx } = await setup();
   const h = commitFile(wt, "a.txt", "task edit\n", "c1");
   const p = await publishBranch(ctx());
   forge.advanceMain("a.txt", "main edit\n");
   const r = await syncAndMerge({ forge, githubRepo: REPO, repoDir, wt, mainBranch: "main", prNumber: p!.pr.number, approvedSha: h });
-  assert.equal(r.outcome, "review_needed");
-  assert.match((r as { detail: string }).detail, /冲突/);
+  assert.equal(r.outcome, "sync_conflict");
+  assert.match((r as { detail: string }).detail, /git merge --no-edit origin\/main/);
+  assert.match((r as { detail: string }).detail, /不要使用 rebase/);
   assert.equal(rev(wt.path, "HEAD"), h, "冲突后分支不能被改动");
   assert.equal(git(wt.path, "status", "--porcelain").trim(), "");
   assert.equal(forge.mergeCalls, 0);
+  assert.throws(() => git(wt.path, "merge", "--no-edit", "origin/main"));
+  writeFileSync(join(wt.path, "a.txt"), "task edit and main edit\n");
+  git(wt.path, "add", "a.txt");
+  git(wt.path, "commit", "-m", "resolve conflict");
+  const resolved = rev(wt.path, "HEAD");
+  await publishBranch(ctx({ pr: p!.pr }));
+  forge.advanceMain("later.txt", "later\n");
+  const updated = await syncAndMerge({ forge, githubRepo: REPO, repoDir, wt, mainBranch: "main", prNumber: p!.pr.number, approvedSha: resolved });
+  assert.equal(updated.outcome, "review_needed", "新的合并提交需要审核，但旧冲突不能重现");
+  const approved = rev(wt.path, "HEAD");
+  const merged = await syncAndMerge({ forge, githubRepo: REPO, repoDir, wt, mainBranch: "main", prNumber: p!.pr.number, approvedSha: approved });
+  assert.equal(merged.outcome, "merged", "再次批准之后必须合并成功");
+  assert.equal(git(forge.origin, "show", "main:a.txt"), "task edit and main edit\n");
 });
 
 test("远端分支在审核之后被改动：合并被拒绝（只合并审核过的提交）", async () => {
@@ -185,7 +199,7 @@ test("两个并发任务：各自独立分支与 PR，先后合并后主分支�
   const t2 = await mk("bbbbbbbb-2", "Task two", "two.txt");
   assert.notEqual(t1.wt.branch, t2.wt.branch);
   assert.equal(forge.prs.length, 2);
-  // 先合并 t1；t2 随后发现主分支前进，rebase 后需要重新审核，再合并
+  // 先合并 t1；t2 随后发现主分支前进，merge 后需要重新审核，再合并
   const m1 = await syncAndMerge({ forge, githubRepo: REPO, repoDir, wt: t1.wt, mainBranch: "main", prNumber: t1.p.pr.number, approvedSha: t1.h });
   assert.equal(m1.outcome, "merged");
   const m2a = await syncAndMerge({ forge, githubRepo: REPO, repoDir, wt: t2.wt, mainBranch: "main", prNumber: t2.p.pr.number, approvedSha: t2.h });

@@ -8,14 +8,14 @@ import { Card } from "@/components/ui/page-header.tsx";
 import { useToast } from "@/components/ui/toast.tsx";
 import { ApiError, apiPost, mutate, useApi } from "@/lib/client-api.ts";
 import { shortSha } from "@/lib/format.ts";
-import { canRestore, stageInfo } from "@/lib/status.ts";
+import { canRestore, canRetryPublish, stageInfo } from "@/lib/status.ts";
 import type { Item } from "@/lib/session-fold.ts";
 import type { TaskItem } from "@/lib/types.ts";
 
 export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: Extract<Item, { type: "check" }>[]; reload: () => void }) {
   const toast = useToast();
   const technicalPlan = useApi<{ plan: { round: number; revision: number } | null }>(task.stage === "plan_reviewing" ? `/api/tasks/${task.id}/technical-plan` : null);
-  const [busy, setBusy] = useState<"approve" | "reject" | "republish" | "restore" | null>(null);
+  const [busy, setBusy] = useState<"approve" | "reject" | "republish" | "restore" | "retry-publish" | null>(null);
   const [rejecting, setRejecting] = useState<null | "plan" | "review">(null);
   const [reason, setReason] = useState("");
   const latest = (name: string) => [...checks].reverse().find((c) => c.name === name);
@@ -68,6 +68,20 @@ export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: E
     }
   }
 
+  async function retryPublish() {
+    setBusy("retry-publish");
+    try {
+      await apiPost(`/api/tasks/${task.id}/publish-retry`);
+      mutate("/api/tasks");
+      reload();
+      toast("ok", "已请求复用当前 PR 重新发布，不会重新创建 PR");
+    } catch (e) {
+      toast("error", e instanceof ApiError ? e.message : "重试发布失败");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function confirmPublish(ok: boolean) {
     setBusy(ok ? "approve" : "reject");
     try {
@@ -99,6 +113,7 @@ export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: E
   }
 
   const info = stageInfo(task.stage);
+  const canRetryPublishNow = canRetryPublish(task.stage, !!task.pr_url, !!task.approved_sha, !!task.merge_sha);
   const Check = ({ label, ok }: { label: string; ok: boolean | undefined }) => (
     <li className="flex items-center gap-2 text-[13px]">
       {ok === undefined ? <Hourglass className="size-4 text-ink-3" aria-hidden /> : ok ? <CheckCircle2 className="size-4 text-ok" aria-hidden /> : <XCircle className="size-4 text-bad" aria-hidden />}
@@ -125,37 +140,54 @@ export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: E
 
       {task.stage === "reviewing" && (
         <div className="grid gap-3">
-          <h2 className="text-[15px] font-semibold">发布审核</h2>
-          {task.pr_url ? (
-            <LinkButton href={task.pr_url} external>
-              <GitPullRequest className="size-4" aria-hidden />
-              在 GitHub 查看 PR #{task.pr_number}
-              <ExternalLink className="size-3.5" aria-hidden />
-            </LinkButton>
+          {task.merge_sha ? (
+            <>
+              <h2 className="text-[15px] font-semibold">代码已经合并</h2>
+              <p className="text-[13px] text-ink-2">
+                PR 已合并（<span className="num">{shortSha(task.merge_sha)}</span>），代码已经在主分支。这里不需要再重建分支或创建 PR；如果只是发布失败，直接重试发布即可。
+              </p>
+              <Button variant="primary" loading={busy === "retry-publish"} disabled={!!busy} onClick={retryPublish}>
+                重试发布（复用已合并的 PR）
+              </Button>
+              {task.pr_number && (
+                <Button onClick={() => setMarking("published")}>标记为已发布</Button>
+              )}
+            </>
           ) : (
-            <div className="grid gap-2 rounded-control bg-warn-soft px-3 py-2 text-[13px] text-warn">
-              <p>PR 还没有创建。{publish && !publish.ok ? `推送或创建失败：${publish.output ?? ""}。守护进程每分钟会自动重试，也可以现在手动重试。` : "稍候片刻。"}</p>
-              <div>
-                <Button size="sm" loading={busy === "republish"} disabled={!!busy} onClick={republish}>
-                  重新推送并创建 PR
-                </Button>
-              </div>
-            </div>
+            <>
+              <h2 className="text-[15px] font-semibold">发布审核</h2>
+              {task.pr_url ? (
+                <LinkButton href={task.pr_url} external>
+                  <GitPullRequest className="size-4" aria-hidden />
+                  在 GitHub 查看 PR #{task.pr_number}
+                  <ExternalLink className="size-3.5" aria-hidden />
+                </LinkButton>
+              ) : (
+                <div className="grid gap-2 rounded-control bg-warn-soft px-3 py-2 text-[13px] text-warn">
+                  <p>PR 还没有创建。{publish && !publish.ok ? `推送或创建失败：${publish.output ?? ""}。守护进程每分钟会自动重试，也可以现在手动重试。` : "稍候片刻。"}</p>
+                  <div>
+                    <Button size="sm" loading={busy === "republish"} disabled={!!busy} onClick={republish}>
+                      重新推送并创建 PR
+                    </Button>
+                  </div>
+                </div>
+              )}
+              <ul className="grid gap-1.5 rounded-control bg-canvas px-3 py-2.5">
+                <Check label="测试" ok={test?.ok} />
+                <Check label="预览" ok={preview?.ok} />
+                <Check label="推送与 PR" ok={task.pr_url ? true : publish?.ok} />
+              </ul>
+              <p className="num text-xs text-ink-2">将合并的提交：{shortSha(task.head_sha)}</p>
+              <p className="text-xs text-ink-2">批准后只会合并这个提交；合并前主分支如有更新，会自动同步并要求你重新审核。有瑕疵就在会话里评论，智能体会在同一个 PR 上继续改。</p>
+              <Button variant="primary" loading={busy === "approve"} disabled={!task.head_sha || !task.pr_url} onClick={() => decide("review", "approve")}>
+                <GitMerge className="size-4" aria-hidden />
+                批准并合并
+              </Button>
+              <Button variant="danger" disabled={!!busy} onClick={() => setRejecting("review")}>
+                驳回
+              </Button>
+            </>
           )}
-          <ul className="grid gap-1.5 rounded-control bg-canvas px-3 py-2.5">
-            <Check label="测试" ok={test?.ok} />
-            <Check label="预览" ok={preview?.ok} />
-            <Check label="推送与 PR" ok={task.pr_url ? true : publish?.ok} />
-          </ul>
-          <p className="num text-xs text-ink-2">将合并的提交：{shortSha(task.head_sha)}</p>
-          <p className="text-xs text-ink-2">批准后只会合并这个提交；合并前主分支如有更新，会自动同步并要求你重新审核。有瑕疵就在会话里评论，智能体会在同一个 PR 上继续改。</p>
-          <Button variant="primary" loading={busy === "approve"} disabled={!task.head_sha || !task.pr_url} onClick={() => decide("review", "approve")}>
-            <GitMerge className="size-4" aria-hidden />
-            批准并合并
-          </Button>
-          <Button variant="danger" disabled={!!busy} onClick={() => setRejecting("review")}>
-            驳回
-          </Button>
         </div>
       )}
 
@@ -164,6 +196,16 @@ export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: E
           <h2 className="text-[15px] font-semibold">确认发布结果</h2>
           <p className="text-[13px] text-ink-2">PR 已合并，智能体执行了发布，但没有明确给出“发布结果：成功/失败”。请看它的总结并核对线上结果后确认。</p>
           {task.error && <p className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-control bg-canvas px-3 py-2 text-[13px] text-ink-2">{task.error}</p>}
+          {canRetryPublishNow && (
+            <div className="grid gap-2 rounded-control bg-warn-soft px-3 py-2.5 text-[13px] text-warn">
+              <p>如果核对后线上仍是旧版本，可以复用已经合并的 PR 重新执行发布，不需要重建分支或 PR。</p>
+              <div>
+                <Button size="sm" loading={busy === "retry-publish"} disabled={!!busy} onClick={retryPublish}>
+                  重新执行发布（复用当前 PR）
+                </Button>
+              </div>
+            </div>
+          )}
           <Button variant="primary" loading={busy === "approve"} disabled={!!busy} onClick={() => confirmPublish(true)}>
             <CheckCircle2 className="size-4" aria-hidden />
             发布成功
@@ -181,6 +223,7 @@ export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: E
             需要你
           </h2>
           <p className="text-[13px] text-ink-2">智能体在等你的决定。请在会话里点选项，或直接回复。</p>
+          {task.error && <p className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-control bg-canvas px-3 py-2 text-[13px] text-ink-2">{task.error}</p>}
         </div>
       )}
 
@@ -207,13 +250,28 @@ export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: E
             执行失败
           </h2>
           <p className="break-words text-[13px] text-ink-2">{task.error ?? "没有记录原因，请查看“检查”和“活动”。"}</p>
+          {canRetryPublishNow ? (
+            <div className="grid gap-2 rounded-control bg-warn-soft px-3 py-2.5 text-[13px] text-warn">
+              <p>
+                {task.merge_sha
+                  ? "PR 已经合并，代码已经在主分支。重试发布不会重建分支或创建新 PR，只会重新执行发布。"
+                  : "这个任务已经有 PR。重试发布会复用并合并它，不会重新创建 PR。"}
+              </p>
+              <div>
+                <Button variant="primary" loading={busy === "retry-publish"} disabled={!!busy} onClick={retryPublish}>
+                  重试发布（复用当前 PR）
+                </Button>
+              </div>
+            </div>
+          ) : (
+            canRestore(task.stage) && <RestoreHint busy={busy === "restore"} disabled={!!busy} onRestore={restore} />
+          )}
           {task.pr_number && (
             <>
               <p className="text-xs text-ink-3">如果其实已经发布成功（例如合并 PR 会自动触发部署），可以手动改正。</p>
               <Button onClick={() => setMarking("published")}>标记为已发布</Button>
             </>
           )}
-          {canRestore(task.stage) && <RestoreHint busy={busy === "restore"} disabled={!!busy} onRestore={restore} />}
         </div>
       )}
 

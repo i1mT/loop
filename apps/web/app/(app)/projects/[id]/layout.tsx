@@ -19,6 +19,7 @@ export default function ProjectLayout({ children, params }: { children: ReactNod
   const tasks = useApi<{ tasks: TaskItem[] }>("/api/tasks", { poll: 8000 });
   const project = projects.data?.projects.find((x) => x.id === id) ?? archivedProjects.data?.projects.find((x) => x.id === id);
 
+  if(machines.error&&!machines.data)return <ErrorState message={machines.error.message} onRetry={machines.reload}/>;
   if (projects.error && !projects.data) return <ErrorState message={projects.error.message} onRetry={projects.reload} />;
   if (projects.loading || archivedProjects.loading || !machines.data)
     return (
@@ -79,7 +80,7 @@ export default function ProjectLayout({ children, params }: { children: ReactNod
         tabs={[
           { href: base, label: "概览", exact: true },
           { href: `${base}/tasks`, label: "任务" },
-          { href: `${base}/integrations`, label: "接入" },
+          ...(project.canManage!==false?[{ href: `${base}/integrations`, label: "接入" }]:[]),
           { href: `${base}/instructions`, label: "全局指令" },
           { href: `${base}/settings`, label: "设置" },
         ]}

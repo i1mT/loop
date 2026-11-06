@@ -3,13 +3,13 @@ import * as D from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
 
-export function Dialog({ open, onOpenChange, title, description, children, wide }: { open: boolean; onOpenChange: (v: boolean) => void; title: string; description?: string; children: ReactNode; wide?: boolean }) {
+export function Dialog({ open, onOpenChange, title, description, children, wide, wider }: { open: boolean; onOpenChange: (v: boolean) => void; title: string; description?: string; children: ReactNode; wide?: boolean; wider?: boolean }) {
   return (
     <D.Root open={open} onOpenChange={onOpenChange}>
       <D.Portal>
         <D.Overlay className="fixed inset-0 z-40 bg-ink/40 backdrop-blur-[1px] data-[state=open]:animate-[rise_120ms_ease-out]" />
         <D.Content
-          className={`fixed left-1/2 top-[8dvh] z-50 max-h-[84dvh] w-[calc(100vw-32px)] -translate-x-1/2 overflow-y-auto rounded-card border border-line bg-card p-5 shadow-pop ${wide ? "max-w-2xl" : "max-w-lg"}`}
+          className={`fixed left-1/2 top-[8dvh] z-50 max-h-[84dvh] w-[calc(100vw-32px)] -translate-x-1/2 overflow-y-auto rounded-card border border-line bg-card p-5 shadow-pop ${wider ? "max-w-5xl" : wide ? "max-w-2xl" : "max-w-lg"}`}
         >
           <div className="mb-4 flex items-start justify-between gap-4">
             <div>

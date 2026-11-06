@@ -76,21 +76,24 @@ export async function decodeEvent(
   const stamp = headers.get("x-lark-request-timestamp") ?? "",
     nonce = headers.get("x-lark-request-nonce") ?? "",
     signature = headers.get("x-lark-signature") ?? "";
-  if (
-    !stamp ||
-    !nonce ||
-    !signature ||
-    !/^\d+$/.test(stamp) ||
-    Math.abs(timestamp - Number(stamp) * 1000) > 300000
-  )
-    throw new Error("回调签名无效或已过期");
-  if (
-    !equal(
-      await digest(stamp + nonce + encryptKey + raw),
-      signature.toLowerCase(),
+  const hasSignature = !!(stamp || nonce || signature);
+  if (hasSignature) {
+    if (
+      !stamp ||
+      !nonce ||
+      !signature ||
+      !/^\d+$/.test(stamp) ||
+      Math.abs(timestamp - Number(stamp) * 1000) > 300000
     )
-  )
-    throw new Error("回调签名无效");
+      throw new Error("回调签名无效或已过期");
+    if (
+      !equal(
+        await digest(stamp + nonce + encryptKey + raw),
+        signature.toLowerCase(),
+      )
+    )
+      throw new Error("回调签名无效");
+  }
   let envelope = JSON.parse(raw) as EventEnvelope & { encrypt?: string };
   if (envelope.encrypt) {
     const encrypted = bytes(envelope.encrypt);
@@ -108,7 +111,17 @@ export async function decodeEvent(
     );
     envelope = JSON.parse(new TextDecoder().decode(plaintext));
   }
-  if (!equal(envelope.header?.token ?? envelope.token ?? "", verificationToken))
+  const verification =
+    envelope.type === "url_verification" &&
+    typeof envelope.challenge === "string" &&
+    envelope.challenge.length > 0 &&
+    envelope.challenge.length <= 4096;
+  // 地址验证可能不携带签名头；仅在验证 token 后回显 challenge，不处理任何业务事件。
+  if (!hasSignature && !verification) throw new Error("消息事件缺少签名");
+  if (
+    !verificationToken ||
+    !equal(envelope.header?.token ?? envelope.token ?? "", verificationToken)
+  )
     throw new Error("回调验证令牌无效");
   return envelope;
 }

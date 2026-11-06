@@ -1,5 +1,5 @@
 // 任务 worktree：每个任务一个分支与 worktree，不碰用户主工作区。
-// 主分支前进时尝试 rebase；工作区脏或冲突则返回结果，由调用方升级为 needs_you。
+// 主分支前进时尝试 merge；工作区脏或冲突则返回结果，由调用方升级为 needs_you。
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -42,9 +42,9 @@ export async function createWorktree(opts: { repo: string; dataDir: string; task
   }
 }
 
-export type SyncResult = { state: "up_to_date" } | { state: "rebased"; head: string } | { state: "dirty" } | { state: "conflict"; detail: string };
+export type SyncResult = { state: "up_to_date" } | { state: "merged"; head: string } | { state: "dirty" } | { state: "conflict"; detail: string };
 
-/** 把任务分支同步到最新的主分支。只在工作区干净时尝试 rebase；冲突则中止并保持原样。 */
+/** 把任务分支同步到最新的主分支。只在工作区干净时尝试 merge；冲突则中止并保持原样。 */
 export async function syncWithMain(wt: Worktree, repo: string, mainRef: string): Promise<SyncResult> {
   // 基线是远端分支（origin/main）时先拉取，才能看到别的任务刚合并进去的改动
   if (mainRef.startsWith("origin/")) await git(repo, "fetch", "origin", "--prune").catch(() => undefined);
@@ -54,12 +54,12 @@ export async function syncWithMain(wt: Worktree, repo: string, mainRef: string):
   const status = await git(wt.path, "status", "--porcelain");
   if (status.trim()) return { state: "dirty" };
   try {
-    await git(wt.path, "rebase", main);
+    await git(wt.path, "merge", "--no-edit", main);
   } catch (e) {
-    await git(wt.path, "rebase", "--abort").catch(() => undefined);
-    return { state: "conflict", detail: (e as Error).message.split("\n")[0] };
+    await git(wt.path, "merge", "--abort").catch(() => undefined);
+    return { state: "conflict", detail: (e as { stdout?: string; stderr?: string }).stdout?.trim() || (e as { stderr?: string }).stderr?.trim() || (e as Error).message };
   }
-  return { state: "rebased", head: (await git(wt.path, "rev-parse", "HEAD")).trim() };
+  return { state: "merged", head: (await git(wt.path, "rev-parse", "HEAD")).trim() };
 }
 
 /** 把相对于基线的全部改动拆成文件级 diff（含未提交的改动） */

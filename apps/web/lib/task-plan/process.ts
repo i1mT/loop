@@ -1,6 +1,9 @@
 import type { Db } from "../pg.ts";
 import { syncTaskDocument } from "../feishu/documents.ts";
+import { enqueuePlanNotification } from "../feishu/jobs/notifications.ts";
 import { getTechnicalPlan } from "./service.ts";
+import { getEnv } from "../env.ts";
+import { publicOrigin } from "../public-url.ts";
 
 // 数据库保存重试进度；定时调度或队列重复唤醒都只处理到期的记录。
 export async function processTaskPlans(db: Db): Promise<void> {
@@ -35,11 +38,25 @@ export async function processTaskPlans(db: Db): Promise<void> {
       const { url } = await syncTaskDocument({
         taskId: row.task_id,
         round: row.round,
-        title: task.title,
+        title: plan.title || task.title,
         markdown: plan.markdown,
         kind: "plan",
         revision: row.revision,
       });
+      // 方案写入飞书文档后，只把简短说明与文档链接发到来源会话。
+      // 通知入队放在推进阶段之前：入队失败时这一轮会重试，文档追加本身是幂等的。
+      await enqueuePlanNotification(
+        db,
+        {
+          taskId: row.task_id,
+          round: row.round,
+          revision: row.revision,
+          title: plan.title || task.title,
+          documentUrl: url,
+          reviewRequired: !!task.plan_review,
+        },
+        publicOrigin(getEnv().LOOP_PUBLIC_URL),
+      );
       const at = Date.now();
       await db.batch([
         db

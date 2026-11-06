@@ -8,6 +8,7 @@ export async function PUT(req: Request) {
   if (!binding) return fail(400, "请先绑定机器人");
   const input = await readJson<{
     chatId: string;
+    chatName?: string;
     projectId: string;
     enabled: boolean;
   }>(req);
@@ -22,9 +23,15 @@ export async function PUT(req: Request) {
   if (!project) return fail(400, "项目不存在");
   await gate.db
     .prepare(
-      "INSERT INTO feishu_chat_routes(binding_id,chat_id,project_id,enabled) VALUES(?,?,?,?) ON CONFLICT(binding_id,chat_id) DO UPDATE SET project_id=EXCLUDED.project_id,enabled=EXCLUDED.enabled",
+      "INSERT INTO feishu_chat_routes(binding_id,chat_id,project_id,enabled,chat_name) VALUES(?,?,?,?,?) ON CONFLICT(binding_id,chat_id) DO UPDATE SET project_id=EXCLUDED.project_id,enabled=EXCLUDED.enabled,chat_name=EXCLUDED.chat_name",
     )
-    .bind(binding.id, input.chatId, input.projectId, input.enabled ? 1 : 0)
+    .bind(
+      binding.id,
+      input.chatId,
+      input.projectId,
+      input.enabled ? 1 : 0,
+      input.chatName?.trim().slice(0, 120) || null,
+    )
     .run();
   return json({ ok: true });
 }

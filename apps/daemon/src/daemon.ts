@@ -365,7 +365,7 @@ export class LoopDaemon extends EventEmitter {
       this.setState(id, "needs_you");
       return;
     }
-    if (sync.state === "rebased") {
+    if (sync.state === "merged") {
       this.store.append(id, {
         kind: "status",
         payload: {
@@ -492,6 +492,12 @@ export class LoopDaemon extends EventEmitter {
     if (meta.state === "needs_you" || meta.state === "crashed")
       this.setState(id, "needs_you", "恢复后等待你的回复");
     else this.setState(id, "idle", "已恢复");
+  }
+
+  /** 人明确要求重试发布：清除重启留下的 crashed/needs_you，让发布会话从空闲开始。 */
+  resetForPublish(id: string): void {
+    if (!this.store.getMeta(id)) return;
+    this.setState(id, "idle", "发布重试：已清除上次中断留下的等待状态");
   }
 
   /** 启动时调用：上次还在运行的会话标记为 crashed，等待 resume */

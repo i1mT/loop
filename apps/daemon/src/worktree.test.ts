@@ -13,7 +13,7 @@ test("为任务创建分支与 worktree，基线是主分支当前提交", async
   assert.equal(git(repo, "rev-parse", "main").trim(), wt.base);
 });
 
-test("主分支前进、任务分支无冲突：自动 rebase", async () => {
+test("主分支前进、任务分支无冲突：自动 merge", async () => {
   const repo = makeRepo();
   const wt = await createWorktree({ repo, dataDir: tempDir("loopd-wt-"), taskId: "t2", mainRef: "main" });
   writeFileSync(join(wt.path, "task.txt"), "task\n");
@@ -23,8 +23,8 @@ test("主分支前进、任务分支无冲突：自动 rebase", async () => {
   git(repo, "add", "-A");
   git(repo, "commit", "-q", "-m", "main moves");
   const r = await syncWithMain(wt, repo, "main");
-  assert.equal(r.state, "rebased");
-  assert.ok(existsSync(join(wt.path, "other.txt")), "rebase 后应包含主分支的新文件");
+  assert.equal(r.state, "merged");
+  assert.ok(existsSync(join(wt.path, "other.txt")), "merge 后应包含主分支的新文件");
 });
 
 test("主分支与任务改了同一行：冲突时中止并保持原样", async () => {
@@ -41,7 +41,7 @@ test("主分支与任务改了同一行：冲突时中止并保持原样", async
   assert.equal(git(wt.path, "status", "--porcelain").trim(), "", "冲突后工作区必须干净");
 });
 
-test("工作区有未提交改动：不尝试 rebase，返回 dirty", async () => {
+test("工作区有未提交改动：不尝试 merge，返回 dirty", async () => {
   const repo = makeRepo();
   const wt = await createWorktree({ repo, dataDir: tempDir("loopd-wt-"), taskId: "t4", mainRef: "main" });
   writeFileSync(join(repo, "other.txt"), "x\n");
@@ -124,4 +124,26 @@ test("发布后继续迭代：工作树对齐最新主分支，新基线之上�
   git(wt.path, "commit", "-q", "-m", "round 2");
   const diff = await diffAgainstBase({ ...wt, base });
   assert.deepEqual(diff.map((f) => f.path), ["round2.txt"]);
+});
+
+
+test("已通过 merge 解决的历史冲突不能在主分支再次前进时重复出现", async () => {
+  const repo = makeRepo();
+  const wt = await createWorktree({ repo, dataDir: tempDir("loopd-wt-"), taskId: "resolved", mainRef: "main" });
+  writeFileSync(join(wt.path, "a.txt"), "task edit\n");
+  git(wt.path, "commit", "-qam", "task");
+  writeFileSync(join(repo, "a.txt"), "main edit\n");
+  git(repo, "commit", "-qam", "main");
+  assert.throws(() => git(wt.path, "merge", "--no-edit", "main"));
+  writeFileSync(join(wt.path, "a.txt"), "resolved: task and main\n");
+  git(wt.path, "add", "a.txt");
+  git(wt.path, "commit", "-qm", "resolve conflict");
+  const resolved = git(wt.path, "rev-parse", "HEAD").trim();
+  writeFileSync(join(repo, "later.txt"), "later\n");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "main advances again");
+  assert.equal((await syncWithMain(wt, repo, "main")).state, "merged");
+  assert.equal(readFileSync(join(wt.path, "a.txt"), "utf8"), "resolved: task and main\n");
+  git(wt.path, "merge-base", "--is-ancestor", resolved, "HEAD");
+  assert.equal((await syncWithMain(wt, repo, "main")).state, "up_to_date");
 });

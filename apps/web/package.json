@@ -8,8 +8,8 @@
     "build:sdk": "vite build --config sdk/vite.config.ts",
     "typecheck:sdk": "tsc -p sdk/tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --experimental-strip-types --no-warnings --test lib/*.test.ts lib/feishu/tests/*.test.ts lib/task-plan/*.test.ts",
-    "test:db": "node --env-file=.env.local --experimental-strip-types --no-warnings --test --test-concurrency=1 lib/*.integration.test.ts lib/feishu/tests/*.integration.test.ts"
+    "test": "node --experimental-strip-types --no-warnings --test lib/*.test.ts lib/feishu/tests/*.test.ts lib/task-plan/*.test.ts lib/machine-access/*.test.ts",
+    "test:db": "node --env-file=.env.local --experimental-strip-types --no-warnings --test --test-concurrency=1 lib/*.integration.test.ts lib/feishu/tests/*.integration.test.ts lib/routing/*.integration.test.ts"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "2.0.0-beta.v.0",

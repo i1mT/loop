@@ -1,8 +1,9 @@
 // 机器：每台电脑上的守护进程以机器身份注册（hello），上报自己的智能体；项目绑定到"某台机器上的某个智能体"。
 // 函数都显式接收 Db，便于对真实 Postgres 做集成测试。
 import type { Db } from "./pg.ts";
-import { DEFAULT_SPACE_ID, linkMachine } from "./spaces.ts";
+
 import { now } from "./time.ts";
+import { routingLock } from "./machine-access/policy.ts";
 
 /** 超过这个时间没有联系，就认为机器离线（空闲轮询间隔 60 秒，留出余量） */
 export const ONLINE_MS = 3 * 60_000;
@@ -52,6 +53,10 @@ export interface MachineView {
   version: string | null;
   lastSeen: number;
   online: boolean;
+  ownerId: string | null;
+  owned: boolean;
+  shared: boolean;
+  legacyAuth: boolean;
   agents: (DiscoveredAgent & { detectedAt: number; models: Choice[]; efforts: Choice[]; modelsAt: number | null; probePending: boolean; probeError: string | null; defaultModel: string | null; defaultEffort: string | null })[];
 }
 
@@ -74,12 +79,11 @@ export async function hello(db: Db, body: HelloBody): Promise<void> {
   await db
     .prepare(
       `INSERT INTO machines (id, name, os, version, last_seen, created_at) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT (id) DO UPDATE SET name=excluded.name, os=excluded.os, version=excluded.version, last_seen=excluded.last_seen`,
+       ON CONFLICT (id) DO UPDATE SET name=CASE WHEN machines.owner_user_id IS NULL THEN excluded.name ELSE machines.name END, os=excluded.os, version=excluded.version, last_seen=excluded.last_seen`,
     )
     .bind(body.machineId, body.name ?? body.machineId, body.os ?? null, body.version ?? null, t, t)
     .run();
-  // 新机器先出现在默认空间。其他空间要在「设置 → 空间」里接入，同一个守护进程就能为那些项目干活。
-  await linkMachine(db, DEFAULT_SPACE_ID, body.machineId);
+
   for (const a of body.agents) {
     await db
       .prepare(
@@ -110,16 +114,17 @@ export async function hello(db: Db, body: HelloBody): Promise<void> {
   }
 }
 
-export async function listMachines(db: Db, spaceId?: string): Promise<MachineView[]> {
+export async function listMachines(db: Db, spaceId?: string, userId?: string | null): Promise<MachineView[]> {
   const machines = (
     await db
       .prepare(
-        spaceId
-          ? `SELECT m.id, m.name, m.os, m.version, m.last_seen FROM machines m JOIN space_machines s ON s.machine_id=m.id AND s.space_id=? ORDER BY m.name`
-          : `SELECT id, name, os, version, last_seen FROM machines ORDER BY name`,
+        userId !== undefined
+          ? `SELECT m.*, s.shared FROM machines m LEFT JOIN space_machines s ON s.machine_id=m.id AND s.space_id=? WHERE m.owner_user_id=? OR s.shared=1 ORDER BY m.name`
+          : spaceId ? `SELECT m.*, s.shared FROM machines m JOIN space_machines s ON s.machine_id=m.id AND s.space_id=? ORDER BY m.name`
+          : `SELECT *, 0 AS shared FROM machines ORDER BY name`,
       )
-      .bind(...(spaceId ? [spaceId] : []))
-      .all<{ id: string; name: string; os: string | null; version: string | null; last_seen: number }>()
+      .bind(...(userId !== undefined ? [spaceId ?? "", userId] : spaceId ? [spaceId] : []))
+      .all<{ id: string; name: string; os: string | null; version: string | null; last_seen: number; owner_user_id: string | null; shared: number; legacy_auth: number }>()
   ).results;
   const agents = (await db.prepare(`SELECT machine_id, kind, installed, version, acp, note, detected_at, models, efforts, models_at, probe_requested_at, probe_error, default_model, default_effort FROM machine_agents ORDER BY machine_id, kind`).all<Record<string, unknown>>()).results;
   const t = now();
@@ -130,6 +135,10 @@ export async function listMachines(db: Db, spaceId?: string): Promise<MachineVie
     version: m.version,
     lastSeen: m.last_seen,
     online: isOnline(m.last_seen, t),
+    ownerId: m.owner_user_id,
+    owned: !!userId && m.owner_user_id === userId,
+    shared: !!m.shared,
+    legacyAuth: !!m.legacy_auth,
     agents: agents
       .filter((a) => a.machine_id === m.id)
       .map((a) => ({
@@ -159,17 +168,27 @@ export async function deleteMachine(db: Db, machineId: string): Promise<{ ok: bo
   const m = await db.prepare(`SELECT last_seen FROM machines WHERE id=?`).bind(machineId).first<{ last_seen: number }>();
   if (!m) return { ok: false, error: "机器不存在" };
   if (isOnline(m.last_seen, now())) return { ok: false, error: "机器在线，守护进程还在运行；请先停掉它再删除" };
-  const p = await db.prepare(`SELECT name FROM projects WHERE machine_id=? LIMIT 1`).bind(machineId).first<{ name: string }>();
+  const p = await db.prepare(`SELECT p.name FROM projects p JOIN project_machines b ON b.project_id=p.id WHERE b.machine_id=? LIMIT 1`).bind(machineId).first<{ name: string }>();
   if (p) return { ok: false, error: `项目“${p.name}”还绑定在这台机器上，请先在项目设置里换一台机器` };
   const t = await db.prepare(`SELECT id FROM tasks WHERE machine_id=? AND stage NOT IN ('published', 'rejected', 'failed', 'cancelled') LIMIT 1`).bind(machineId).first<{ id: string }>();
   if (t) return { ok: false, error: "还有未结束的任务属于这台机器，请先取消或等它们完成" };
-  await db.batch([
+  try { await db.batch([
+    routingLock(db),
+    db.prepare(`SELECT 1 / CASE WHEN EXISTS(SELECT 1 FROM machines m WHERE m.id=? AND m.last_seen<=?)
+      AND NOT EXISTS(SELECT 1 FROM project_machines WHERE machine_id=?)
+      AND NOT EXISTS(SELECT 1 FROM projects WHERE machine_id=?)
+      AND NOT EXISTS(SELECT 1 FROM tasks WHERE machine_id=? AND stage NOT IN ('published','rejected','failed','cancelled'))
+      THEN 1 ELSE 0 END`).bind(machineId,now()-ONLINE_MS,machineId,machineId,machineId),
+    db.prepare(`DELETE FROM machine_pairings WHERE machine_id=?`).bind(machineId),
     db.prepare(`DELETE FROM leases WHERE daemon_id=?`).bind(machineId),
     db.prepare(`DELETE FROM machine_agents WHERE machine_id=?`).bind(machineId),
     db.prepare(`DELETE FROM daemon_claude_sessions WHERE machine_id=?`).bind(machineId),
     db.prepare(`DELETE FROM space_machines WHERE machine_id=?`).bind(machineId),
     db.prepare(`DELETE FROM machines WHERE id=?`).bind(machineId),
-  ]);
+  ]); } catch(error) {
+    if(error instanceof Error && /division by zero/.test(error.message))return {ok:false,error:"机器状态或项目绑定已经变化，请刷新之后重试"};
+    throw error;
+  }
   return { ok: true };
 }
 

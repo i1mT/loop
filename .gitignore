@@ -20,3 +20,7 @@ dist/
 .DS_Store
 apps/web/public/sdk.js
 coverage/
+
+# 本机维护说明与临时验证资料。
+AGENTS.local.md
+.scratchpad/

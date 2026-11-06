@@ -8,8 +8,9 @@ export const TASK_PLAN_SCHEMA = [
     updated_at BIGINT NOT NULL, PRIMARY KEY(task_id, round))`,
   `CREATE TABLE IF NOT EXISTS task_plans (
     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, round INTEGER NOT NULL, revision INTEGER NOT NULL,
-    markdown TEXT NOT NULL, content_hash TEXT NOT NULL, created_at BIGINT NOT NULL,
+    title TEXT NOT NULL DEFAULT '', markdown TEXT NOT NULL, content_hash TEXT NOT NULL, created_at BIGINT NOT NULL,
     PRIMARY KEY(task_id, round, revision))`,
+  `ALTER TABLE task_plans ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''`,
   `CREATE TABLE IF NOT EXISTS task_plan_records (
     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, round INTEGER NOT NULL, kind TEXT NOT NULL,
     markdown TEXT NOT NULL, content_hash TEXT NOT NULL, synced_hash TEXT, sync_error TEXT,

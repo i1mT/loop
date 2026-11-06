@@ -53,6 +53,7 @@ export async function processMessage(
       message.chat_id,
       body,
       `${job.id}:reply`,
+      {replyInThread:message.chat_type==="group"},
     );
   if (/^绑定\s+[A-Za-z0-9-]+$/.test(text)) {
     if (message.chat_type !== "p2p") {
@@ -216,9 +217,9 @@ export async function processMessage(
   });
   await db
     .prepare(
-      "INSERT INTO feedback_subscriptions(feedback_id,binding_id,chat_id,message_id) VALUES(?,?,?,?) ON CONFLICT DO NOTHING",
+      "INSERT INTO feedback_subscriptions(feedback_id,binding_id,chat_id,message_id,chat_type) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING",
     )
-    .bind(result.feedback.id, binding.id, message.chat_id, message.message_id)
+    .bind(result.feedback.id, binding.id, message.chat_id, message.message_id,message.chat_type)
     .run();
   await db
     .prepare(

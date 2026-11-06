@@ -6,6 +6,7 @@ export interface Job {
   payload: string;
   attempts: number;
   lock_token: string;
+  remote_message_id?: string | null;
 }
 export async function enqueue(
   db: Db,
@@ -37,7 +38,7 @@ export async function enqueueReply(
   chatId: string,
   text: string,
   key: string,
-  context?: { taskId: string; round: number },
+  context?: { taskId?: string; round?: number; card?: unknown; replyInThread?: boolean },
 ): Promise<void> {
   return enqueue(db, bindingId, "reply", key, {
     messageId,

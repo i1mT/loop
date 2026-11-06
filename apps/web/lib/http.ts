@@ -1,3 +1,6 @@
+import { canonicalPath } from "./machine-access/path.ts";
+import { authenticateDaemon } from "./machine-access/daemon-auth.ts";
+import { machineRequestAllowed, rememberUser } from "./machine-access/request.ts";
 import { getEnv } from "./env.ts";
 import { sessionUser } from "./auth-server.ts";
 import { foreignResource, loadRequestSpace } from "./spaces.ts";
@@ -22,7 +25,7 @@ export async function authRole(req: Request): Promise<"admin" | "daemon" | null>
   const t = bearer(req);
   if (t) {
     if (env.LOOP_ADMIN_TOKEN && t === env.LOOP_ADMIN_TOKEN) return "admin";
-    if (env.LOOP_DAEMON_TOKEN && t === env.LOOP_DAEMON_TOKEN) return "daemon";
+    if (canonicalPath(req)?.startsWith("/api/daemon/") && await authenticateDaemon(await getDb(), req, t, env.LOOP_DAEMON_TOKEN)) return "daemon";
     return null;
   }
   if (await sessionUser(req.headers, new URL(req.url).origin)) return "admin";
@@ -44,13 +47,17 @@ async function pinSpace(req: Request): Promise<Response | null> {
       userId = row?.id ?? null;
     }
   }
+  if(!userId && canonicalPath(req)!=="/api/status")return fail(403,"请先登录账号并选择空间");
   const spaceId = await loadRequestSpace(req, userId);
   const db = await getDb();
-  if (await foreignResource(db, spaceId, new URL(req.url).pathname)) return fail(404, "不存在");
+  rememberUser(req, userId);
+  if (!await machineRequestAllowed(db, req, userId, spaceId)) return fail(403, "这台机器仅限所有者使用，或你没有管理权限");
+  if (!canonicalPath(req)!.startsWith("/api/machines/") && await foreignResource(db, spaceId, canonicalPath(req)!)) return fail(404, "不存在");
   return null;
 }
 
 export async function requireRole(req: Request, role: "admin" | "daemon"): Promise<Response | null> {
+  if(canonicalPath(req)===null)return fail(400,"请求路径格式无效");
   const got = await authRole(req);
   if (got === null) return fail(401, "未认证");
   if (got !== role) return fail(403, `需要 ${role} 权限`);

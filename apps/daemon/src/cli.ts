@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { connectionCommand } from "./connection/commands.ts";
+import { readConnection } from "./connection/config.ts";
+import { lockDaemon } from "./connection/process.ts";
 // loopd 命令行：本地验证与手动操作入口。数据目录默认 ~/.loop-daemon，可用 LOOPD_HOME 覆盖。
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +14,7 @@ const [cmd, ...rest] = process.argv.slice(2);
 
 function flag(name: string): string | undefined {
   const i = rest.indexOf(`--${name}`);
-  return i >= 0 ? rest[i + 1] : undefined;
+  return i >= 0 ? rest[i + 1] ?? "true" : undefined;
 }
 
 function print(x: unknown): void {
@@ -19,6 +22,7 @@ function print(x: unknown): void {
 }
 
 async function main(): Promise<void> {
+  if (await connectionCommand(cmd, flag, dataDir)) return;
   const d = new LoopDaemon({ dataDir });
   try {
     switch (cmd) {
@@ -61,13 +65,17 @@ async function main(): Promise<void> {
         break;
       case "serve": {
         // loopd serve：LOOPD_GATEWAY 与 LOOPD_DAEMON_TOKEN 从环境变量读取（令牌不写入仓库）
-        const gateway = process.env.LOOPD_GATEWAY;
-        const token = process.env.LOOPD_DAEMON_TOKEN;
+        const saved = readConnection(dataDir);
+        const gateway = process.env.LOOPD_GATEWAY ?? saved?.gateway;
+        const token = process.env.LOOPD_DAEMON_TOKEN ?? saved?.token;
         if (!gateway || !token) throw new Error("需要环境变量 LOOPD_GATEWAY 与 LOOPD_DAEMON_TOKEN");
         const ac = new AbortController();
         process.on("SIGINT", () => ac.abort());
         process.on("SIGTERM", () => ac.abort());
-        await serve({ gateway, token, daemonId: defaultDaemonId(), machineName: process.env.LOOPD_MACHINE_NAME, dataDir, signal: ac.signal });
+        const unlock = lockDaemon(dataDir);
+        try {
+          await serve({ gateway, token, daemonId: process.env.LOOPD_MACHINE_ID ? defaultDaemonId() : saved?.machineId ?? defaultDaemonId(), machineName: process.env.LOOPD_MACHINE_NAME, dataDir, signal: ac.signal });
+        } finally { unlock(); }
         return; // serve 结束后不再执行 finally 之外的逻辑
       }
       case "recover":

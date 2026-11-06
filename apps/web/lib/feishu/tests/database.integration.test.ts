@@ -1,3 +1,5 @@
+import { FEISHU_NOTIFICATION_SCHEMA } from "../notification-schema.ts";
+import { hello } from "../../machines.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Db } from "../../pg.ts";
@@ -21,7 +23,7 @@ test(
   async () => {
     const db = new Db(process.env.DATABASE_URL!);
     await migrate(db);
-    await db.batch(FEISHU_MIGRATIONS.map((sql) => db.prepare(sql)));
+    await db.batch([...FEISHU_MIGRATIONS,...FEISHU_NOTIFICATION_SCHEMA].map((sql) => db.prepare(sql)));
     useDb(db);
     const prefix = `feishu-${crypto.randomUUID()}`,
       spaces = [`${prefix}-a`, `${prefix}-b`],
@@ -40,6 +42,7 @@ test(
       return Response.json({ code: 0, data: { message_id: "om_sent" } });
     }) as typeof fetch;
     try {
+      await hello(db,{machineId:prefix+"-machine",agents:[{kind:"grok",installed:true,version:"test",acp:true,note:null}]});
       await db
         .prepare('INSERT INTO "user"(id,name,email) VALUES(?,?,?)')
         .bind(user, "测试用户", `${prefix}@example.test`)
@@ -51,15 +54,16 @@ test(
             .bind(spaces[i], spaces[i], Date.now()),
           db
             .prepare(
-              "INSERT INTO projects(id,name,repo_path,main_ref,default_agent,machine_id,agent,space_id,created_at) VALUES(?,?,'','main','grok','fixture-machine','grok',?,?)",
+              "INSERT INTO projects(id,name,repo_path,main_ref,default_agent,machine_id,agent,space_id,created_at) VALUES(?,?,'','main','grok',?,'grok',?,?)",
             )
-            .bind(projects[i], `项目${i}`, spaces[i], Date.now()),
+            .bind(projects[i], `项目${i}`, prefix+"-machine", spaces[i], Date.now()),
           db
             .prepare(
               "INSERT INTO space_members(space_id,user_id,role,created_at) VALUES(?,?,'owner',?)",
             )
             .bind(spaces[i], user, Date.now()),
         ]);
+        await db.prepare(`INSERT INTO project_machines(project_id,machine_id,position) VALUES(?,?,0)`).bind(projects[i],prefix+"-machine").run();
         await saveBatchSettings(
           db,
           { enabled: false, maxScale: "small", size: 3 },
@@ -221,7 +225,7 @@ test(
       assert.ok(
         !sent.some((s) => String(s.body.content).includes("旧轮次完成")),
       );
-      // 合并后同一个来源会话只产生一条状态投递。
+      // 合并后分别在每条来源消息的话题中投递状态。
       await saveBatchSettings(
         db,
         { enabled: true, maxScale: "small", size: 3 },
@@ -273,7 +277,7 @@ test(
             .bind(`task:${merged}:event:${eventId}:%`)
             .first<{ n: number }>()
         )?.n,
-        1,
+        3,
       );
     } finally {
       for (let i = 0; i < spaces.length; i++) {
@@ -303,6 +307,8 @@ test(
           .bind(`%:${spaces[i]}`)
           .run();
       }
+      await db.prepare(`DELETE FROM machine_agents WHERE machine_id=?`).bind(prefix+"-machine").run();
+      await db.prepare(`DELETE FROM machines WHERE id=?`).bind(prefix+"-machine").run();
       await db.prepare('DELETE FROM "user" WHERE id=?').bind(user).run();
     }
   },
@@ -440,6 +446,11 @@ test(
       assert.equal(blocks.length, count);
       assert.equal(appends, 1);
       assert.equal(creates, 1);
+      assert.equal(remote[0].title, "测试", "文档标题直接使用方案标题");
+      assert.ok(
+        !JSON.stringify(blocks).includes("第 1 轮 · 技术方案"),
+        "方案正文不添加轮次前缀",
+      );
     } finally {
       await db.prepare("DELETE FROM tasks WHERE id=?").bind(id).run();
       await db

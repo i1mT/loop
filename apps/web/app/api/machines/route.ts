@@ -1,3 +1,4 @@
+import { requestUserId } from "@/lib/machine-access/request.ts";
 import { json, requireRole } from "@/lib/http.ts";
 import { getDb } from "@/lib/db.ts";
 import { listMachines } from "@/lib/machines.ts";
@@ -7,5 +8,5 @@ import { requestSpace } from "@/lib/spaces.ts";
 export async function GET(req: Request) {
   const denied = await requireRole(req, "admin");
   if (denied) return denied;
-  return json({ ok: true, machines: await listMachines(await getDb(), requestSpace(req) ?? undefined) });
+  return json({ ok: true, machines: await listMachines(await getDb(), requestSpace(req) ?? undefined, requestUserId(req)) });
 }

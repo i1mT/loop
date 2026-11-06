@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { decodeEvent, digest, seal, unseal } from "../crypto.ts";
-import { wikiToken } from "../bindings.ts";
+import { bindingView, wikiToken } from "../bindings.ts";
 import {
   documentClientToken,
   markdownBlocks,
+  FeishuApiError,
   FeishuClient,
 } from "../client.ts";
 const master = Buffer.alloc(32, 7).toString("base64");
@@ -122,6 +123,8 @@ test("飞书客户端token按实例复用，回复包含幂等ID，正文分块�
   assert.equal(requests.filter((r) => r.url.includes("/auth/")).length, 1);
   assert.equal(requests[1].body.uuid, "unique-id");
   assert.equal(requests[1].body.reply_in_thread, undefined);
+  await client.reply("om_thread","thread reply","thread-id",true);
+  assert.equal(requests.at(-1)!.body.reply_in_thread,true);
   const tokens = await Promise.all([
     documentClientToken("fixed-operation", 0),
     documentClientToken("fixed-operation", 1),
@@ -133,6 +136,60 @@ test("飞书客户端token按实例复用，回复包含幂等ID，正文分块�
     );
     assert.ok(requests.some((r) => r.url.includes(`client_token=${token}`)));
   }
+});
+test("状态通知以交互卡片发送，回复和主动发送都带幂等ID", async () => {
+  const requests: { url: string; body: Record<string, unknown> }[] = [];
+  const fetchImpl = (async (url, init) => {
+    const uri = String(url),
+      body = JSON.parse(String(init?.body ?? "{}"));
+    requests.push({ url: uri, body });
+    if (uri.includes("/auth/"))
+      return Response.json({ code: 0, tenant_access_token: "token" });
+    return Response.json({ code: 0, data: { message_id: "om_card" } });
+  }) as typeof fetch;
+  const client = new FeishuClient(
+    {
+      appId: "cli_test",
+      appSecret: "secret",
+      verificationToken: "token",
+      encryptKey: "encrypt",
+    },
+    fetchImpl,
+  );
+  const card = {
+    header: { title: { tag: "plain_text", content: "【待人工处理】改动待审核" } },
+    elements: [],
+  };
+  await client.replyCard("om_message", card, "reply-card-id", true);
+  await client.sendCard("oc_chat", card, "send-card-id");
+  assert.equal(requests[1].body.msg_type, "interactive");
+  assert.equal(requests[1].body.uuid, "reply-card-id");
+  assert.equal(requests[1].body.reply_in_thread,true);
+  assert.deepEqual(JSON.parse(String(requests[1].body.content)), card);
+  assert.equal(requests[2].body.msg_type, "interactive");
+  assert.equal(requests[2].body.uuid, "send-card-id");
+});
+
+test("目录为空时飞书不返回 items，按空目录处理", async () => {
+  const fetchImpl = (async (url) => {
+    if (String(url).includes("/auth/"))
+      return Response.json({ code: 0, tenant_access_token: "token" });
+    return Response.json({
+      code: 0,
+      data: { has_more: false, page_token: "" },
+    });
+  }) as typeof fetch;
+  const client = new FeishuClient(
+    {
+      appId: "cli_test",
+      appSecret: "secret",
+      verificationToken: "token",
+      encryptKey: "encrypt",
+    },
+    fetchImpl,
+  );
+  assert.deepEqual(await client.listWiki("space", "parent"), []);
+  assert.deepEqual(await client.listChats(), { chats: [], nextPageToken: null });
 });
 
 import type { Db } from "../../pg.ts";
@@ -300,5 +357,105 @@ test("图片文件名兼容现有读取接口且重试复用同一对象", async
   assert.notEqual(
     await attachmentName("other-binding", "message", "png"),
     first,
+  );
+});
+
+test("地址验证允许无签名头，仍校验 token，普通事件和错误签名不能绕过", async () => {
+  const raw = JSON.stringify({
+    type: "url_verification",
+    token: "token",
+    challenge: "challenge",
+  });
+  assert.equal(
+    (await decodeEvent(raw, new Headers(), "encrypt", "token")).challenge,
+    "challenge",
+  );
+  await assert.rejects(decodeEvent(raw, new Headers(), "encrypt", "wrong"));
+  await assert.rejects(decodeEvent(raw, new Headers(), "encrypt", ""));
+  await assert.rejects(
+    decodeEvent(
+      JSON.stringify({
+        header: { token: "token", event_type: "im.message.receive_v1" },
+      }),
+      new Headers(),
+      "encrypt",
+      "token",
+    ),
+  );
+  await assert.rejects(
+    decodeEvent(
+      raw,
+      new Headers({ "x-lark-signature": "bad" }),
+      "encrypt",
+      "token",
+    ),
+  );
+  const iv = crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey(
+    "raw",
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode("encrypt")),
+    "AES-CBC",
+    false,
+    ["encrypt"],
+  );
+  const cipher = await crypto.subtle.encrypt(
+    { name: "AES-CBC", iv },
+    key,
+    new TextEncoder().encode(raw),
+  );
+  const encrypted = JSON.stringify({
+    encrypt: Buffer.concat([iv, new Uint8Array(cipher)]).toString("base64"),
+  });
+  assert.equal(
+    (await decodeEvent(encrypted, new Headers(), "encrypt", "token")).challenge,
+    "challenge",
+  );
+  await assert.rejects(
+    decodeEvent(encrypted, new Headers(), "wrong-key", "token"),
+  );
+});
+test("设置视图暴露最近消息与企业不匹配状态", () => {
+  const binding = {
+    id: "binding-a",
+    space_id: "space-a",
+    app_id: "cli_test",
+    tenant_key: "tenant_a",
+    secrets: "v1.x.y",
+    wiki_url: "https://demo.feishu.cn/wiki/abc",
+    default_project_id: null,
+    notification_chat_id: null,
+    enabled: 1,
+    created_at: 0,
+    updated_at: 0,
+    tenant_verified_at: 1,
+    last_event_at: 10,
+    tenant_mismatch_at: 20,
+    tenant_mismatch_key: "tenant_b",
+  } satisfies Binding;
+  const view = bindingView(binding, "https://loop.example");
+  assert.equal(view.lastEventAt, 10);
+  assert.equal(view.tenantMismatchAt, 20);
+  assert.equal(view.tenantMismatchKey, "tenant_b");
+  assert.equal(view.callbackUrl, "https://loop.example/api/feishu/webhook/binding-a");
+  assert.equal(bindingView({ ...binding, tenant_mismatch_at: null }, "https://loop.example").tenantMismatchAt, null);
+});
+
+test("飞书权限错误指出缺失的 scope，便于用户申请", () => {
+  const error = new FeishuApiError(
+    99991672,
+    "Access denied. One of the following scopes is required: [wiki:wiki, wiki:node:create].应用尚未开通所需的应用身份权限：[wiki:wiki, wiki:node:create]",
+  );
+  assert.match(error.message, /99991672/);
+  assert.match(error.message, /wiki:wiki、wiki:node:create/);
+  assert.match(
+    new FeishuApiError(
+      131006,
+      "permission denied: node permission denied, tenant needs edit permission.",
+    ).message,
+    /知识库成员/,
+  );
+  assert.equal(
+    new FeishuApiError(230002).message,
+    "飞书操作失败（错误码 230002），请检查应用权限和目录授权",
   );
 });

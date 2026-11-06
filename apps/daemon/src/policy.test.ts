@@ -11,7 +11,7 @@ test("只读操作直接放行", () => {
 
 test("worktree 内的编辑放行，越界编辑升级", () => {
   assert.equal(decide({ toolCall: { kind: "edit", locations: [{ path: `${WT}/src/a.ts` }] } }, WT).action, "allow");
-  assert.equal(decide({ toolCall: { kind: "edit", locations: [{ path: "/path/to/project" }] } }, WT).action, "escalate");
+  assert.equal(decide({ toolCall: { kind: "edit", locations: [{ path: "/workspace/other/a.ts" }] } }, WT).action, "escalate");
   assert.equal(decide({ toolCall: { kind: "edit", locations: [{ path: "../escape.txt" }] } }, WT).action, "escalate", "相对路径穿越必须升级");
   assert.equal(decide({ toolCall: { kind: "edit", locations: [] } }, WT).action, "escalate", "没有目标路径必须升级");
 });

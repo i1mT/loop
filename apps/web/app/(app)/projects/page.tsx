@@ -1,4 +1,5 @@
 "use client";
+import { MachineSummary } from "@/components/project/machine-summary.tsx";
 import { Archive, FolderGit2, Plus } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
@@ -11,6 +12,7 @@ import { stageInfo } from "@/lib/status.ts";
 import { timeAgo } from "@/lib/format.ts";
 import type { MachineItem, ProjectItem, TaskItem } from "@/lib/types.ts";
 import { AgentName } from "@/components/agent/agent-icon.tsx";
+import { bindingAgents, projectBindings } from "@/lib/routing/view.ts";
 
 export default function ProjectsPage() {
   const [showArchived, setShowArchived] = useState(false);
@@ -24,7 +26,7 @@ export default function ProjectsPage() {
     <>
       <PageHeader
         title="项目"
-        description="项目绑定一个 GitHub 仓库，以及由哪台机器上的哪个智能体来做。"
+        description="为项目配置仓库和多台执行机器，任务优先分配给在线空闲机器。"
         actions={
           <div className="flex items-center gap-2">
             <Button aria-pressed={showArchived} variant={showArchived ? "primary" : "secondary"} onClick={() => setShowArchived(!showArchived)}>
@@ -62,7 +64,9 @@ export default function ProjectsPage() {
         ) : (
           <ul className="divide-y divide-line">
             {list.map((p) => {
-              const m = machines.data?.machines.find((x) => x.id === p.machine_id);
+              const bindings = projectBindings(p);
+              const online = bindings.some((b) => machines.data?.machines.find((x) => x.id === b.machineId)?.online);
+              const agents = bindingAgents(bindings);
               const mine = (tasks.data?.tasks ?? []).filter((t) => t.project_id === p.id);
               const open = mine.filter((t) => ["attention", "review"].includes(stageInfo(t.stage).group)).length;
               const last = mine.reduce((a, t) => Math.max(a, t.updated_at), 0);
@@ -74,9 +78,10 @@ export default function ProjectsPage() {
                       <div className="num mt-0.5 truncate text-xs text-ink-2">{p.github_repo ?? "未设置仓库"}</div>
                     </div>
                     <div className="flex items-center gap-2 text-[13px] text-ink-2">
-                      <span className={`size-2 rounded-full ${m?.online ? "bg-ok" : "bg-ink-3"}`} aria-hidden />
-                      {m?.name ?? p.machine_id ?? "未绑定"} · <AgentName kind={p.agent} size={14} />
-                      <span className="sr-only">{m?.online ? "（在线）" : "（离线）"}</span>
+                      <span className={`size-2 rounded-full ${online ? "bg-ok" : "bg-ink-3"}`} aria-hidden />
+                      <MachineSummary project={p} machines={machines.data?.machines??[]}/>
+                      <span className="inline-flex items-center gap-1">{agents.map((kind) => <AgentName key={kind} kind={kind} size={14} />)}</span>
+                      <span className="sr-only">{online ? "（有机器在线）" : "（机器都离线）"}</span>
                     </div>
                     <div className="num w-44 text-right text-xs text-ink-3">
                       {mine.length} 个任务{open > 0 && <span className="text-signal"> · {open} 个待处理</span>}

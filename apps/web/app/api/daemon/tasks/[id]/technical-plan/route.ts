@@ -17,6 +17,7 @@ export async function POST(
     daemonId?: string;
     leaseId?: string;
     round?: number;
+    title?: string;
     markdown?: string;
     baselineHead?: string;
     kind?: "result";
@@ -40,11 +41,14 @@ export async function POST(
       });
     } else {
       if (!body.baselineHead) return fail(400, "缺少工作树基线");
+      if (typeof body.title !== "string" || !body.title.trim())
+        return fail(400, "缺少技术方案标题");
       await acceptTechnicalPlan(db, {
         taskId: id,
         round: body.round!,
         daemonId: body.daemonId,
         leaseId: body.leaseId,
+        title: body.title,
         markdown: body.markdown,
         baselineHead: body.baselineHead,
       });

@@ -45,6 +45,8 @@ export const canRestart = (s: Stage): boolean => ["rejected", "failed", "cancell
 export const canRestore = (s: Stage): boolean => ["rejected", "failed", "cancelled"].includes(s);
 /** 待审核却还没有 PR（推送或建 PR 失败）：人可以让守护进程立刻重试 */
 export const canRepublish = (s: Stage, hasPr: boolean): boolean => s === "reviewing" && !hasPr;
+/** 已经有 PR（通常已合并）但发布失败：复用原 PR 直接重试发布，不要再走“重建分支 + 新建 PR” */
+export const canRetryPublish = (s: Stage, hasPr: boolean, hasApproved: boolean, hasMerge: boolean): boolean => ["failed", "publish_review", "reviewing"].includes(s) && (hasMerge || (hasPr && hasApproved));
 /** 已发布：有新意见可以继续迭代——同一个会话接着改（保留上下文），新开一个 PR，审核后再次发布 */
 export const canIterate = (s: Stage): boolean => s === "published";
 /** 能往会话里发消息：还有会话在管理的阶段，或已发布（发消息即开始新一轮）；失败、驳回、取消的任务没人会取走消息 */

@@ -89,6 +89,13 @@ export class Db {
     return new Statement(this.client, sql);
   }
 
+  /** 返回各语句的结果，用于事务锁之后重新验证权限并写入。 */
+  async batchReturning(statements: Statement[]): Promise<{ rows: Row[]; rowCount: number }[]> {
+    if (statements.length === 0) return [];
+    const results = await this.client.transaction(statements.map((s) => s.query()) as never);
+    return (results as unknown as { rows: Row[]; fields: { name: string; dataTypeID: number }[]; rowCount: number }[]).map(result => ({rows: convert(result), rowCount: result.rowCount ?? 0}));
+  }
+
   /** 在一个事务里依次执行（非交互事务） */
   async batch(statements: Statement[]): Promise<void> {
     if (statements.length === 0) return;

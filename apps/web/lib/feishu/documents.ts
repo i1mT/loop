@@ -46,7 +46,8 @@ export async function syncTaskDocument(
         .bind(input.taskId, input.round)
         .first<Binding>();
   if (!binding) throw new Error("空间尚未启用飞书机器人");
-  const title = `[${input.taskId}] ${input.title}`.slice(0, 180);
+  const title = input.title.trim().slice(0, 180);
+  if (!title) throw new Error("文档标题不能为空");
   await db
     .prepare(
       "INSERT INTO task_documents(task_id,binding_id,wiki_url,title,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(task_id) DO NOTHING",
@@ -94,7 +95,9 @@ export async function syncTaskDocument(
             doc.title,
           );
         } catch (error) {
-          if (error instanceof FeishuApiError && error.code < 500)
+          // 飞书明确拒绝了这次创建（返回业务错误码）说明文档没建出来，可以安全重试；
+          // 只有网络中断这类结果未知的失败才保留 creating=1，避免重复建文档。
+          if (error instanceof FeishuApiError)
             await db
               .prepare(
                 "UPDATE task_documents SET creating=0 WHERE task_id=? AND lock_token=?",
@@ -135,9 +138,15 @@ export async function syncTaskDocument(
           : input.kind === "result"
             ? "实际改动与验证"
             : "发布结果";
+      // 技术方案正文原样写入，不再加“第 N 轮 · 技术方案”这样的前缀；
+      // 同文档后续追加的实际改动和发布记录仍保留轮次标题，便于回溯。
+      const content =
+        input.kind === "plan"
+          ? input.markdown
+          : `第 ${input.round} 轮 · ${heading}\n\n${input.markdown}`;
       const blockIds = await client.appendMarkdown(
         documentId,
-        `第 ${input.round} 轮 · ${heading}\n\n${input.markdown}`,
+        content,
         op,
         async () => {
           const lock = await db

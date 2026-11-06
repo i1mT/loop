@@ -8,7 +8,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { id } = await params;
   const body = await readJson<{ decision?: "approve" | "reject"; reason?: string }>(req);
   if (body?.decision === "approve") {
-    const r = await approveTask(id, "admin");
+    const r = await approveTask(id, "admin", body.reason ?? "");
     return r.ok ? json({ ok: true }) : fail(409, r.error ?? "失败");
   }
   if (body?.decision === "reject") {

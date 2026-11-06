@@ -5,36 +5,34 @@ import { SaveBar } from "@/components/project/save-bar.tsx";
 import { useProjectCtx } from "@/components/project/project-context.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Dialog } from "@/components/ui/dialog.tsx";
-import { Field, Input, Select } from "@/components/ui/field.tsx";
+import { Field, Input } from "@/components/ui/field.tsx";
 import { Card } from "@/components/ui/page-header.tsx";
 import { useToast } from "@/components/ui/toast.tsx";
 import { ApiError, apiPatch, apiPost, mutate } from "@/lib/client-api.ts";
-import { agentUsable } from "@/lib/types.ts";
-import { AgentSelect } from "@/components/agent/agent-icon.tsx";
+import { projectBindings } from "@/lib/routing/view.ts";
+import { MachinePoolEditor } from "@/components/project/machine-pool-editor.tsx";
 
-/** 项目设置：基本信息，以及“由哪台机器上的哪个智能体来做”。模型与思考程度不在这里，在机器页的智能体里配置。 */
+
+/** 项目设置：基本信息，以及每台机器用哪个智能体、模型与思考程度。 */
 export default function ProjectSettings() {
   const { project, machines } = useProjectCtx();
   const toast = useToast();
+  const canManage=project.canManage!==false;
 
   // ---- 基本信息 ----
-  const basics = { name: project.name, repo: project.github_repo ?? "", mainRef: project.main_ref, localPath: project.local_path ?? "" };
+  const basics = { name: project.name, repo: project.github_repo ?? "", mainRef: project.main_ref };
   const [b, setB] = useState(basics);
   const [bBusy, setBBusy] = useState(false);
   const [bErr, setBErr] = useState<string | null>(null);
-  useEffect(() => setB(basics), [basics.name, basics.repo, basics.mainRef, basics.localPath]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => setB(basics), [basics.name, basics.repo, basics.mainRef]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ---- 智能体绑定 ----
-  const [machineId, setMachineId] = useState(project.machine_id ?? "");
-  const [agent, setAgent] = useState(project.agent ?? "");
-  const [aBusy, setABusy] = useState(false);
-  const [aErr, setAErr] = useState<string | null>(null);
-  useEffect(() => {
-    setMachineId(project.machine_id ?? "");
-    setAgent(project.agent ?? "");
-  }, [project.machine_id, project.agent]);
-  const machine = machines.find((m) => m.id === machineId);
-  const usable = (machine?.agents ?? []).filter(agentUsable);
+  // ---- 机器与智能体绑定 ----
+  const initialBindings=projectBindings(project);
+  const [bindings,setBindings]=useState(initialBindings);
+  const [aBusy,setABusy]=useState(false),[aErr,setAErr]=useState<string|null>(null);
+  const bindingKey=JSON.stringify(initialBindings);
+  useEffect(()=>{setBindings(JSON.parse(bindingKey));},[bindingKey]);
+  const validBindings=bindings.length>0&&bindings.every(row=>!!row.machineId&&!!row.agent);
 
   // ---- 归档 ----
   const [confirmingArchive, setConfirmingArchive] = useState(false);
@@ -76,64 +74,32 @@ export default function ProjectSettings() {
           className="grid gap-4 p-4 sm:max-w-2xl"
           onSubmit={(e) => {
             e.preventDefault();
-            void patch({ name: b.name, githubRepo: b.repo.trim(), mainRef: b.mainRef, localPath: b.localPath.trim() || null }, setBBusy, setBErr, "已保存");
+            void patch({ name: b.name, githubRepo: b.repo.trim(), mainRef: b.mainRef }, setBBusy, setBErr, "已保存");
           }}
         >
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="项目名称">{(id) => <Input id={id} value={b.name} onChange={(e) => setB({ ...b, name: e.target.value })} />}</Field>
-            <Field label="GitHub 仓库">{(id) => <Input id={id} value={b.repo} onChange={(e) => setB({ ...b, repo: e.target.value })} spellCheck={false} />}</Field>
-            <Field label="主分支">{(id) => <Input id={id} value={b.mainRef} onChange={(e) => setB({ ...b, mainRef: e.target.value })} />}</Field>
-            <Field label="已有检出路径（可选）" hint="该机器上已有的仓库目录，填了就直接在它上面建 worktree">
-              {(id) => <Input id={id} value={b.localPath} onChange={(e) => setB({ ...b, localPath: e.target.value })} spellCheck={false} />}
-            </Field>
+            {!canManage&&<p className="text-sm text-ink-2 sm:col-span-2">公共配置由拥有全部机器使用权限的成员管理。你可以调整下方有权使用的机器绑定；其他绑定会保留。</p>}
+            <Field label="项目名称">{(id) => <Input disabled={!canManage} id={id} value={b.name} onChange={(e) => setB({ ...b, name: e.target.value })} />}</Field>
+            <Field label="GitHub 仓库">{(id) => <Input disabled={!canManage} id={id} value={b.repo} onChange={(e) => setB({ ...b, repo: e.target.value })} spellCheck={false} />}</Field>
+            <Field label="主分支">{(id) => <Input disabled={!canManage} id={id} value={b.mainRef} onChange={(e) => setB({ ...b, mainRef: e.target.value })} />}</Field>
+
           </div>
-          <SaveBar busy={bBusy} dirty={JSON.stringify(b) !== JSON.stringify(basics)} disabled={!b.name.trim()} error={bErr} />
+          <SaveBar busy={bBusy} dirty={JSON.stringify(b) !== JSON.stringify(basics)} disabled={!b.name.trim()||!canManage} error={bErr} />
         </form>
       </Card>
 
       <Card>
         <h2 className="border-b border-line px-4 py-3 text-[15px] font-semibold">机器与智能体</h2>
         <form
-          className="grid gap-4 p-4 sm:max-w-2xl"
+          className="grid gap-4 p-4"
           onSubmit={(e) => {
             e.preventDefault();
-            void patch({ machineId, agent }, setABusy, setAErr, "已保存，之后创建的任务使用新的智能体");
+            void patch({ bindings }, setABusy, setAErr, "分配设置已保存，之后创建的任务使用新规则");
           }}
         >
-          <p className="text-[13px] text-ink-2">
-            任务由这台机器上的这个智能体执行。它的模型与思考程度在
-            <Link href={`/machines/${machineId}/agents/${agent}`} className="mx-1 underline underline-offset-2 hover:text-ink">
-              机器页的智能体配置
-            </Link>
-            里设置。
-          </p>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="机器">
-              {(id) => (
-                <Select
-                  id={id}
-                  value={machineId}
-                  onChange={(e) => {
-                    setMachineId(e.target.value);
-                    setAgent("");
-                  }}
-                >
-                  {machines.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                      {m.online ? "" : "（离线）"}
-                    </option>
-                  ))}
-                </Select>
-              )}
-            </Field>
-            <Field label="智能体" hint={usable.length ? undefined : "这台机器没有可用的智能体"}>
-              {(id) => (
-                <AgentSelect id={id} value={agent} onChange={setAgent} options={usable.map((a) => ({ value: a.kind }))} />
-              )}
-            </Field>
-          </div>
-          <SaveBar busy={aBusy} dirty={machineId !== (project.machine_id ?? "") || agent !== (project.agent ?? "")} disabled={!agent} error={aErr} />
+          <MachinePoolEditor value={bindings} onChange={setBindings} machines={machines} restricted={!canManage}/>
+          <SaveBar busy={aBusy} dirty={JSON.stringify(bindings)!==bindingKey} disabled={!validBindings} error={aErr}/>
+
         </form>
       </Card>
 
@@ -147,11 +113,11 @@ export default function ProjectSettings() {
           </p>
           <div>
             {archived ? (
-              <Button loading={archiveBusy} onClick={() => setArchived(false)}>
+              <Button loading={archiveBusy} disabled={!canManage} onClick={() => setArchived(false)}>
                 恢复项目
               </Button>
             ) : (
-              <Button variant="danger" onClick={() => setConfirmingArchive(true)}>
+              <Button disabled={!canManage} variant="danger" onClick={() => setConfirmingArchive(true)}>
                 归档项目
               </Button>
             )}
@@ -162,7 +128,7 @@ export default function ProjectSettings() {
       <Dialog open={confirmingArchive} onOpenChange={setConfirmingArchive} title={`归档“${project.name}”？`} description="归档后不再接收新任务，已有任务不受影响，随时可以恢复。">
         <div className="flex justify-end gap-2">
           <Button onClick={() => setConfirmingArchive(false)}>取消</Button>
-          <Button variant="danger" loading={archiveBusy} onClick={() => setArchived(true)}>
+          <Button variant="danger" loading={archiveBusy} disabled={!canManage} onClick={() => setArchived(true)}>
             确认归档
           </Button>
         </div>

@@ -1,3 +1,6 @@
+import { FEISHU_NOTIFICATION_SCHEMA } from "./feishu/notification-schema.ts";
+import { ROUTING_SCHEMA } from "./routing/schema.ts";
+import { MACHINE_ACCESS_SCHEMA } from "./machine-access/schema.ts";
 // Postgres（Neon）迁移：版本记在 kv.schema_version，每一步幂等。迁移在事务里执行，并用咨询锁避免并发建表冲突。
 import { FEISHU_MIGRATIONS } from "./feishu/schema.ts";
 import { TASK_PLAN_SCHEMA } from "./task-plan/schema.ts";
@@ -171,12 +174,49 @@ export const MIGRATIONS: string[][] = [
     `INSERT INTO kv (k, v) SELECT 'batch_max_scale:space_default', v FROM kv WHERE k='batch_max_scale' ON CONFLICT (k) DO NOTHING`,
     `INSERT INTO kv (k, v) SELECT 'batch_size:space_default', v FROM kv WHERE k='batch_size' ON CONFLICT (k) DO NOTHING`,
   ],
-  // 迁移 13：账号角色。超级管理员由部署者显式创建，不按固定邮箱授予权限。
+  // 迁移 13：账号角色，超级管理员由部署者显式创建。
   [
     `ALTER TABLE "user" ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'member'`,
   ],
   // 空间飞书机器人与技术方案，后台副作用由持久日志恢复。
   [...FEISHU_MIGRATIONS, ...TASK_PLAN_SCHEMA, `ALTER TABLE feedbacks ADD COLUMN IF NOT EXISTS submission_input TEXT`],
+  // 配置体验：企业归属自动验证，群名称不要求用户读取内部 ID。
+  [
+    `ALTER TABLE space_feishu_bindings ADD COLUMN IF NOT EXISTS notification_chat_name TEXT`,
+    `ALTER TABLE space_feishu_bindings ADD COLUMN IF NOT EXISTS callback_verified_at BIGINT`,
+    `ALTER TABLE space_feishu_bindings ADD COLUMN IF NOT EXISTS tenant_verified_at BIGINT`,
+    `ALTER TABLE feishu_chat_routes ADD COLUMN IF NOT EXISTS chat_name TEXT`,
+  ],
+  // 企业归属误绑自愈：记录最近一次收到消息和最近一次因企业不匹配被拒绝，设置页显示并可重置。
+  [
+    `ALTER TABLE space_feishu_bindings ADD COLUMN IF NOT EXISTS last_event_at BIGINT`,
+    `ALTER TABLE space_feishu_bindings ADD COLUMN IF NOT EXISTS tenant_mismatch_at BIGINT`,
+    `ALTER TABLE space_feishu_bindings ADD COLUMN IF NOT EXISTS tenant_mismatch_key TEXT`,
+  ],
+  // 17：已经在线上执行过的机器隔离迁移，保留原编号。
+  MACHINE_ACCESS_SCHEMA,
+  // 18：platform 分支已经上线的技术方案标题迁移，保留原编号。
+  [`ALTER TABLE task_plans ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''`],
+  // 19：兼容仅执行过 platform 占位迁移的安装；幂等补齐机器隔离，不改变现有所有权、凭证或共享设置。
+  MACHINE_ACCESS_SCHEMA,
+  // 发布恢复：记录 PR 已合并的提交，发布失败时不再要求重建分支和 PR，直接重试发布。
+  [
+    `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS merge_sha TEXT`,
+    `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS merged_at BIGINT`,
+    `UPDATE tasks SET merge_sha=(regexp_match(error,'PR 已合并[（(]([0-9a-f]+)'))[1],merged_at=updated_at WHERE merge_sha IS NULL AND error LIKE '%PR 已合并%'`,
+  ],
+  // 兼容仅执行过 platform 占位迁移的安装，保持机器隔离结构完整。
+  MACHINE_ACCESS_SCHEMA,
+
+  ROUTING_SCHEMA,
+  FEISHU_NOTIFICATION_SCHEMA,
+  // 项目按机器配置智能体：绑定行保存自己的智能体，以及可选的模型/思考程度覆盖（为空跟随机器上该智能体的默认配置）。
+  [
+    `ALTER TABLE project_machines ADD COLUMN IF NOT EXISTS agent TEXT`,
+    `ALTER TABLE project_machines ADD COLUMN IF NOT EXISTS model TEXT`,
+    `ALTER TABLE project_machines ADD COLUMN IF NOT EXISTS effort TEXT`,
+    `UPDATE project_machines b SET agent=p.agent FROM projects p WHERE b.project_id=p.id AND b.agent IS NULL AND p.agent IS NOT NULL`,
+  ],
 ];
 
 

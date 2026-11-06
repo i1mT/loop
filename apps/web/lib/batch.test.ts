@@ -18,13 +18,12 @@ test("进池条件：规模不超过门槛、不可疑、功能开启、属性�
   assert.equal(shouldPool({ ...s, maxScale: "large" }, true, { scale: "large", suspicious: false }), true);
 });
 
-test("属性：方案审核、指定别的智能体、勾了“单独处理”的不参与合并；紧急的（管理员经 SDK 提交）照常进池", () => {
-  assert.equal(mergeableByAttributes({}, "grok"), true);
-  assert.equal(mergeableByAttributes({ agent: "grok" }, "grok"), true);
-  assert.equal(mergeableByAttributes({ mergeable: false }, "grok"), false);
-  assert.equal(mergeableByAttributes({ priority: "urgent" } as never, "grok"), true);
-  assert.equal(mergeableByAttributes({ planReview: true }, "grok"), false);
-  assert.equal(mergeableByAttributes({ agent: "claude" }, "grok"), false);
+test("属性：方案审核、显式指定智能体、勾了“单独处理”的不参与合并；紧急的（管理员经 SDK 提交）照常进池", () => {
+  assert.equal(mergeableByAttributes({}), true);
+  assert.equal(mergeableByAttributes({ agent: "grok" }), false);
+  assert.equal(mergeableByAttributes({ mergeable: false }), false);
+  assert.equal(mergeableByAttributes({ priority: "urgent" } as never), true);
+  assert.equal(mergeableByAttributes({ planReview: true }), false);
 });
 
 test("设置校验", () => {

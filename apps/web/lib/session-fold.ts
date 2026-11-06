@@ -25,6 +25,8 @@ export interface SessionResponse {
   pending: Pending[];
   review: { releaseReview: boolean; planReview: boolean; headSha: string | null; approvedSha: string | null; error: string | null } | null;
   notifications: { id: number; kind: string; body: string; createdAt: number }[];
+  /** 最新一页之前是否还有更早的事件 */
+  hasMore?: boolean;
 }
 
 /** 把事件流折叠成展示项：同一个 toolCallId 合并，同一个 diff 路径取最新 */

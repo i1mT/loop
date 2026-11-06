@@ -1,3 +1,4 @@
+import { canUseProject } from "./routing/access.ts";
 // 小问题合并：反馈先判定规模，小的进所在项目的池，攒够 N 条（或人点“立即处理”）合成一个任务。
 // 设计与取舍见 docs/plans/2026-10-26/batch-merge.md。反馈与任务是分开的：一个任务对应 1..N 条反馈，反馈的阶段读它所属任务的。
 import type { Stage } from "@loop/core";
@@ -143,17 +144,17 @@ export async function saveBatchSettings(
 }
 
 /**
- * 这条反馈能不能参与合并：方案审核与指定别的智能体是任务级属性，没法并进别人的任务。
+ * 这条反馈能不能参与合并：方案审核与显式指定智能体是任务级属性，没法并进别人的任务。
+ * 现在每台机器可以有不同的智能体，合并任务无法同时保留“指定智能体”，所以只要指定了就单独处理。
  * 优先级不拦：管理员经 SDK 提交的是紧急，也进池（用户决定）；合成的任务取成员里最高的优先级。
  */
 export function mergeableByAttributes(
   input: { mergeable?: boolean; planReview?: boolean; agent?: string },
-  projectAgent: string,
 ): boolean {
   return (
     input.mergeable !== false &&
     !input.planReview &&
-    (!input.agent || input.agent === projectAgent)
+    !input.agent
   );
 }
 
@@ -233,7 +234,7 @@ const parseRef = (raw: string | null): Record<string, unknown> | undefined => {
 export async function fireBatch(
   db: Db,
   projectId: string,
-  opts: { size: number; force: boolean },
+  opts: { size: number; force: boolean; actorId?: string | null },
 ): Promise<TaskRow | null> {
   // 崩溃于占用之后、事务创建任务之前的批次，可以安全归还池中。
   await db
@@ -295,6 +296,7 @@ export async function fireBatch(
           },
       {
         id: `batch_${token.slice(6)}`,
+        actorId: opts.actorId,
         claim: { token, count: rows.length },
         statements: [
           db
@@ -349,11 +351,12 @@ export async function submitFeedback(
     .first<FeedbackRow & { submission_input: string | null }>();
   if (previous) return resumeSubmission(db, previous, input);
   const project = await requireOpenProject(input.projectId);
+  if (input.actorId !== undefined && !await canUseProject(db,project.id,input.actorId,project.space_id ?? DEFAULT_SPACE_ID)) throw new Error("没有这台机器的使用权限");
   const settings = await getBatchSettings(
     db,
     project.space_id ?? DEFAULT_SPACE_ID,
   );
-  const attributesOk = mergeableByAttributes(input, project.agent);
+  const attributesOk = mergeableByAttributes(input);
   let classification: Classification | null = null;
   if (settings.enabled && attributesOk) {
     const key = deps.key !== undefined ? deps.key : await envKey();
@@ -433,6 +436,7 @@ async function resumeSubmission(
     const task = await fireBatch(db, feedback.project_id, {
       size: settings.size,
       force: true,
+      actorId: fallback.actorId,
     });
     const updated = await db
       .prepare(`SELECT * FROM feedbacks WHERE id=?`)
@@ -475,6 +479,7 @@ async function resumeSubmission(
     const task = await fireBatch(db, feedback.project_id, {
       size: settings.size,
       force: false,
+      actorId: input.actorId,
     }).catch(() => null);
     if (task) {
       const updated = await db
@@ -585,13 +590,14 @@ export async function getPool(db: Db, projectId: string): Promise<PoolView> {
 export async function flushPool(
   db: Db,
   projectId: string,
+  actorId?: string | null,
 ): Promise<TaskRow | null> {
   const project = await requireOpenProject(projectId);
   const settings = await getBatchSettings(
     db,
     project.space_id ?? DEFAULT_SPACE_ID,
   );
-  return fireBatch(db, projectId, { size: settings.size, force: true });
+  return fireBatch(db, projectId, { size: settings.size, force: true, actorId });
 }
 
 /** 撤回池里的反馈（已并入任务的不能撤回，要在任务上操作） */

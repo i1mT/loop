@@ -1,3 +1,4 @@
+import { sendNotification, ThreadBusy, type OutgoingMessage } from "./threads.ts";
 import type { Db } from "../../pg.ts";
 import { getBindingById, getBindingSecrets } from "../bindings.ts";
 import { FeishuClient } from "../client.ts";
@@ -34,13 +35,7 @@ export async function processFeishuJobs(
           origin,
         );
       else {
-        const payload = JSON.parse(job.payload) as {
-          messageId?: string;
-          chatId: string;
-          text: string;
-          taskId?: string;
-          round?: number;
-        };
+        const payload = JSON.parse(job.payload) as OutgoingMessage;
         if (payload.taskId) {
           const task = await db
             .prepare("SELECT round FROM tasks WHERE id=?")
@@ -57,9 +52,7 @@ export async function processFeishuJobs(
             continue;
           }
         }
-        if (job.kind === "reply" && payload.messageId)
-          await client.reply(payload.messageId, payload.text, job.id);
-        else await client.sendText(payload.chatId, payload.text, job.id);
+        await sendNotification(db,client,job,payload);
       }
       await db
         .prepare(
@@ -69,6 +62,11 @@ export async function processFeishuJobs(
         .run();
       processed++;
     } catch (error) {
+      if(error instanceof ThreadBusy){
+        await db.prepare(`UPDATE feishu_jobs SET state='pending',attempts=attempts-1,next_at=?,locked_until=0 WHERE id=? AND lock_token=?`)
+          .bind(Date.now()+1000,job.id,job.lock_token).run();
+        continue;
+      }
       // 不保存外部 API 的原始响应，避免日志或错误详情含有凭证和消息正文。
       const detail = error instanceof Error ? error.message : "飞书操作失败";
       const safe = /飞书|目录|图片|文档|机器人|项目|反馈|账号|技术方案/.test(

@@ -76,12 +76,14 @@ test(
         round: 1,
         daemonId: id,
         leaseId: id,
+        title: "登录态自动续期",
         markdown,
         baselineHead: "a".repeat(40),
       };
       await acceptTechnicalPlan(db, input);
       await acceptTechnicalPlan(db, input);
       assert.equal((await getTechnicalPlan(db, id))?.phase, "syncing");
+      assert.equal((await getTechnicalPlan(db, id))?.title, "登录态自动续期");
       assert.equal(
         (
           await db

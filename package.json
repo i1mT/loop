@@ -5,7 +5,7 @@
   "scripts": {
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
-    "test": "node --experimental-strip-types --no-warnings --test packages/core/dist/*.test.js apps/daemon/src/*.test.ts apps/web/lib/*.test.ts apps/web/lib/feishu/tests/*.test.ts",
+    "test": "node --experimental-strip-types --no-warnings --test packages/core/dist/*.test.js apps/daemon/src/*.test.ts apps/web/lib/*.test.ts apps/web/lib/feishu/tests/*.test.ts apps/web/lib/task-plan/*.test.ts apps/web/lib/machine-access/*.test.ts scripts/lib/*.test.mjs",
     "postinstall": "node scripts/build-core.mjs"
   },
   "description": "Turn feedback into reviewed, shipped changes with local coding agents.",

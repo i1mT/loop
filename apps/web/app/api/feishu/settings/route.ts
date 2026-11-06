@@ -1,3 +1,4 @@
+import { projectManageSql } from "@/lib/routing/access.ts";
 import { feishuAccess } from "@/lib/feishu/access.ts";
 import {
   bindingView,
@@ -15,16 +16,16 @@ export async function GET(req: Request) {
   const projects = (
     await db
       .prepare(
-        "SELECT id,name FROM projects WHERE space_id=? AND archived_at IS NULL ORDER BY name",
+        `SELECT p.id,p.name FROM projects p WHERE p.space_id=? AND p.archived_at IS NULL AND ${projectManageSql("p")} ORDER BY p.name`,
       )
-      .bind(spaceId)
+      .bind(spaceId,userId)
       .all()
   ).results;
   const routes = binding
     ? (
         await db
           .prepare(
-            'SELECT chat_id AS "chatId",project_id AS "projectId",enabled FROM feishu_chat_routes WHERE binding_id=?',
+            'SELECT chat_id AS "chatId",chat_name AS "chatName",project_id AS "projectId",enabled FROM feishu_chat_routes WHERE binding_id=?',
           )
           .bind(binding.id)
           .all()

@@ -1,3 +1,4 @@
+import { stageChange, notificationContext } from "./feishu/jobs/context.ts";
 // 守护进程协议的服务端实现（见 docs/contracts/daemon-protocol.md）。
 import { parseSessionEvent } from "@loop/core";
 import { canTransition, type Stage } from "@loop/core";
@@ -21,6 +22,7 @@ import {
   canOverrideOutcome,
   canRepublish,
   canRestore,
+  canRetryPublish,
   STAGE_LABEL,
 } from "./status.ts";
 
@@ -136,7 +138,7 @@ export async function claim(
       model: task.model,
       effort: task.effort,
       instructions: project?.instructions ?? null,
-      repoPath: project?.local_path ?? null,
+      repoPath: task.execution_snapshot ? task.execution_path ?? null : project?.local_path ?? null,
       githubRepo: project?.github_repo ?? null,
       mainRef: project?.main_ref ?? "main",
       branch: task.branch,
@@ -153,6 +155,7 @@ export async function claim(
       reattach,
       job,
       approvedSha: task.approved_sha,
+      mergeSha: task.merge_sha,
       round: task.round ?? 1,
       technicalPlan: await getTechnicalPlan(db, task.id, task.round ?? 1).then(
         (p) =>
@@ -323,7 +326,7 @@ export async function decidePlan(
     };
   const db = await getDb();
   if (decision === "reject") {
-    await setStage(taskId, "rejected");
+    await setStage(taskId, "rejected",reason);
     await notify(taskId, "rejected", `方案已驳回：${reason || "无说明"}`);
     return { ok: true };
   }
@@ -331,17 +334,14 @@ export async function decidePlan(
   if (technicalPlan) {
     if (revision === undefined || revision !== technicalPlan.revision)
       return { ok: false, error: "方案版本发生变化，请刷新后重新审核" };
-    if (!(await approveTechnicalPlan(db, taskId, revision)))
+    if (!(await approveTechnicalPlan(db, taskId, revision, reason)))
       return { ok: false, error: "方案尚未保存完成或审核状态已经变化" };
     await notify(taskId, "plan_approved", "方案已批准，开始实现");
     return { ok: true };
   }
-  await db
-    .prepare(
-      `UPDATE tasks SET plan_approved=1, stage='plan_approved', updated_at=? WHERE id=?`,
-    )
-    .bind(now(), taskId)
-    .run();
+  await stageChange(db,db.prepare(
+    `UPDATE tasks SET plan_approved=1,stage='plan_approved',updated_at=? WHERE id=?`
+  ).bind(now(),taskId),taskId,reason);
   await notify(taskId, "plan_approved", "方案已批准，开始实现");
   const s = await db
     .prepare(
@@ -542,6 +542,7 @@ export async function reportHead(
 export async function approveTask(
   taskId: string,
   by: "admin" | "auto",
+  reason = "",
 ): Promise<{ ok: boolean; error?: string }> {
   const task = await getTask(taskId);
   if (!task) return { ok: false, error: "任务不存在" };
@@ -552,12 +553,10 @@ export async function approveTask(
     };
   if (!task.head_sha) return { ok: false, error: "还没有可审核的提交" };
   const db = await getDb();
-  await db
-    .prepare(
+  await stageChange(db,db.prepare(
       `UPDATE tasks SET approved_sha=?, stage='approved', updated_at=? WHERE id=?`,
     )
-    .bind(task.head_sha, now(), taskId)
-    .run();
+    .bind(task.head_sha, now(), taskId),taskId,reason);
   await notify(
     taskId,
     "approved",
@@ -579,7 +578,7 @@ export async function rejectTask(
       ok: false,
       error: `当前阶段是 ${STAGE_LABEL[task.stage] ?? task.stage}，不能驳回`,
     };
-  await setStage(taskId, "rejected");
+  await setStage(taskId, "rejected",reason);
   await notify(taskId, "rejected", `已驳回：${reason || "无说明"}`);
   return { ok: true };
 }
@@ -596,9 +595,65 @@ export async function cancelTask(
       ok: false,
       error: `当前阶段是 ${STAGE_LABEL[task.stage] ?? task.stage}，不能取消`,
     };
-  await setStage(taskId, "cancelled");
+  await setStage(taskId, "cancelled",reason);
   await notify(taskId, "cancelled", `已取消${reason ? `：${reason}` : ""}`);
   return { ok: true };
+}
+
+/** 守护进程发现智能体没有产生任何提交：把任务停下来等人回复，而不是进入“待审核却永远没有 PR”。 */
+export async function markTaskNeedsYou(
+  taskId: string,
+  leaseId: string,
+  daemonId: string,
+  reason: string,
+): Promise<{ ok: boolean; status: number; error?: string }> {
+  const db = await getDb();
+  if (!(await checkLease(leaseId, daemonId, taskId)))
+    return { ok: false, status: 409, error: "租约已失效" };
+  const task = await getTask(taskId);
+  if (!task) return { ok: false, status: 404, error: "任务不存在" };
+  if (["published", "failed", "cancelled", "rejected"].includes(task.stage))
+    return { ok: false, status: 409, error: "任务已经结束" };
+  const text = reason.slice(0, 2000);
+  await db
+    .prepare(
+      `UPDATE tasks SET stage='needs_you', error=?, updated_at=? WHERE id=?`,
+    )
+    .bind(text, now(), taskId)
+    .run();
+  await notify(taskId, "needs_you", text);
+  return { ok: true, status: 200 };
+}
+
+/**
+ * 发布检查点：PR 已经合并时立刻记录合并提交。这样即使发布智能体或守护进程随后崩溃，
+ * 网关也知道代码已进入主分支，恢复时应重试发布，而不是重建分支和 PR。
+ */
+export async function recordMerge(
+  leaseId: string,
+  daemonId: string,
+  mergeSha: string,
+): Promise<{ ok: boolean; status: number; error?: string }> {
+  if (!/^[a-f0-9]{7,64}$/i.test(mergeSha))
+    return { ok: false, status: 400, error: "合并提交格式无效" };
+  const db = await getDb();
+  const lease = await db
+    .prepare(`SELECT task_id FROM leases WHERE id=?`)
+    .bind(leaseId)
+    .first<{ task_id: string }>();
+  if (!lease) return { ok: false, status: 409, error: "租约不存在" };
+  if (!(await checkLease(leaseId, daemonId, lease.task_id)))
+    return { ok: false, status: 409, error: "租约已失效" };
+  const task = await getTask(lease.task_id);
+  if (!task || task.stage !== "publishing")
+    return { ok: false, status: 409, error: "任务不在发布中" };
+  await db
+    .prepare(
+      `UPDATE tasks SET merge_sha=?, merged_at=?, updated_at=? WHERE id=?`,
+    )
+    .bind(mergeSha.toLowerCase(), now(), now(), task.id)
+    .run();
+  return { ok: true, status: 200 };
 }
 
 /**
@@ -606,12 +661,13 @@ export async function cancelTask(
  * - published：智能体明确说发布成功，任务结束
  * - agent_done：PR 已合并，发布智能体已结束但没有给出明确结论，等人确认结果（publish_review）
  * - failed：合并或发布流程出错，任务结束（可由人重开）
+ * - sync_conflict：主分支冲突，持久投递给原会话修复，再审核新提交
  * - review_needed：发布前发现提交已变（主分支前进），回到待审核，需要人重新批准
  */
 export async function completePublish(
   leaseId: string,
   daemonId: string,
-  outcome: "published" | "agent_done" | "failed" | "review_needed",
+  outcome: "published" | "agent_done" | "failed" | "review_needed" | "sync_conflict",
   output: string,
 ): Promise<{ ok: boolean; status: number; error?: string }> {
   const db = await getDb();
@@ -625,6 +681,19 @@ export async function completePublish(
   const task = await getTask(lease.task_id);
   if (!task || task.stage !== "publishing")
     return { ok: false, status: 409, error: "任务不在发布中" };
+  // 冲突必须交回原会话处理。阶段与收件箱同时持久保存，重启之后仍会继续投递。
+  // 条件更新保证重复回传不会重复投递；旧提交不能再被批准。
+  if (outcome === "sync_conflict") {
+    await db.prepare(`WITH repairing AS (
+      UPDATE tasks SET stage='running', head_sha=NULL, approved_sha=NULL, error=NULL, updated_at=?
+      WHERE id=? AND stage='publishing' RETURNING id
+    ) INSERT INTO inbox(session_id,kind,body,created_at)
+      SELECT s.id,'message',?,? FROM repairing r
+      JOIN LATERAL (SELECT id FROM sessions WHERE task_id=r.id ORDER BY created_at DESC LIMIT 1) s ON true`)
+      .bind(now(), task.id, output, now()).run();
+    await notify(task.id, "running", "主分支存在冲突，已交给原智能体处理；完成后更新原 PR 并重新审核");
+    return { ok: true, status: 200 };
+  }
   // 需要重新审核时租约保留：工作区仍属于这个守护进程，待审核后直接继续（否则工作会话会被当作租约被收回）
   await recordTaskResult(
     db,
@@ -661,7 +730,7 @@ export async function completePublish(
   } else {
     await db
       .prepare(
-        `UPDATE tasks SET approved_sha=NULL, stage='reviewing', updated_at=? WHERE id=?`,
+        `UPDATE tasks SET approved_sha=NULL, merge_sha=NULL, merged_at=NULL, stage='reviewing', updated_at=? WHERE id=?`,
       )
       .bind(now(), task.id)
       .run();
@@ -691,20 +760,16 @@ export async function confirmPublish(
     };
   const db = await getDb();
   if (ok) {
-    await db
-      .prepare(
+    await stageChange(db,db.prepare(
         `UPDATE tasks SET error=NULL, stage='published', updated_at=? WHERE id=?`,
       )
-      .bind(now(), taskId)
-      .run();
+      .bind(now(), taskId),taskId,note);
     await notify(taskId, "published", "已确认发布成功");
   } else {
-    await db
-      .prepare(
+    await stageChange(db,db.prepare(
         `UPDATE tasks SET error=?, stage='failed', updated_at=? WHERE id=?`,
       )
-      .bind(note || "人工确认发布失败", now(), taskId)
-      .run();
+      .bind(note || "人工确认发布失败", now(), taskId),taskId,note);
     await notify(taskId, "failed", `已确认发布失败${note ? `：${note}` : ""}`);
   }
   return { ok: true };
@@ -733,24 +798,20 @@ export async function overrideOutcome(
     .bind(taskId)
     .run();
   if (to === "published") {
-    await db
-      .prepare(
+    await stageChange(db,db.prepare(
         `UPDATE tasks SET error=NULL, stage='published', updated_at=? WHERE id=?`,
       )
-      .bind(now(), taskId)
-      .run();
+      .bind(now(), taskId),taskId,note);
     await notify(
       taskId,
       "published",
       `人工标记为已发布${note ? `：${note}` : ""}`,
     );
   } else {
-    await db
-      .prepare(
+    await stageChange(db,db.prepare(
         `UPDATE tasks SET error=?, stage='failed', updated_at=? WHERE id=?`,
       )
-      .bind(note || "人工标记为失败", now(), taskId)
-      .run();
+      .bind(note || "人工标记为失败", now(), taskId),taskId,note);
     await notify(taskId, "failed", `人工标记为失败${note ? `：${note}` : ""}`);
   }
   return { ok: true };
@@ -893,6 +954,11 @@ export async function republishTask(
 ): Promise<{ ok: boolean; error?: string }> {
   const task = await getTask(taskId);
   if (!task) return { ok: false, error: "任务不存在" };
+  if (task.merge_sha)
+    return {
+      ok: false,
+      error: "这个任务的 PR 已经合并，代码已在主分支；请用“重试发布”，不需要重新创建 PR",
+    };
   if (!canRepublish(task.stage, !!task.pr_url))
     return {
       ok: false,
@@ -904,6 +970,62 @@ export async function republishTask(
   if (r.ok)
     await notify(taskId, "republish", "已请求守护进程重新推送并创建 PR");
   return r;
+}
+
+/**
+ * 已经有 PR（通常已合并）但发布失败：复用原 PR 直接重试发布。
+ * 不清理 approved_sha/pr_number，也不重建分支，避免“代码已在主分支却要求新建 PR”的死循环。
+ */
+export async function retryPublishTask(
+  taskId: string,
+  note?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const task = await getTask(taskId);
+  if (!task) return { ok: false, error: "任务不存在" };
+  if (!canRetryPublish(task.stage, !!task.pr_url, !!task.approved_sha, !!task.merge_sha))
+    return {
+      ok: false,
+      error: `当前阶段是 ${STAGE_LABEL[task.stage] ?? task.stage}，没有可复用的已合并 PR`,
+    };
+  const db = await getDb();
+  const s = await db
+    .prepare(`SELECT id FROM sessions WHERE task_id=? ORDER BY created_at DESC LIMIT 1`)
+    .bind(taskId)
+    .first<{ id: string }>();
+  if (!s)
+    return {
+      ok: false,
+      error: "这个任务没有会话记录，不能重试发布；请用“重新开始”",
+    };
+  const text = note?.trim();
+  await db.batch([
+    db
+      .prepare(`UPDATE leases SET released=1 WHERE task_id=? AND released=0`)
+      .bind(taskId),
+    db
+      .prepare(
+        `UPDATE tasks SET stage='publishing', error=NULL, updated_at=? WHERE id=?`,
+      )
+      .bind(now(), taskId),
+    // 人的补充要求随发布任务一起投递，守护进程在发送发布指令前取走。
+    ...(text
+      ? [
+          db
+            .prepare(
+              `INSERT INTO inbox(session_id,kind,body,created_at) VALUES(?,'message',?,?)`,
+            )
+            .bind(s.id, text, now()),
+        ]
+      : []),
+  ]);
+  await notify(
+    taskId,
+    "publishing",
+    text
+      ? `已带补充要求重新执行发布：${text.slice(0, 200)}`
+      : "已请求重新执行发布；沿用已经合并的 PR，不会重新创建 PR",
+  );
+  return { ok: true };
 }
 
 /**
@@ -919,6 +1041,12 @@ export async function restoreTask(
     return {
       ok: false,
       error: `当前阶段是 ${STAGE_LABEL[task.stage] ?? task.stage}，不能恢复`,
+    };
+  if (task.merge_sha)
+    return {
+      ok: false,
+      error:
+        "这个任务的 PR 已经合并，代码已经在主分支；请用“重试发布”，不需要重新创建 PR",
     };
   const db = await getDb();
   const s = await db
@@ -936,7 +1064,7 @@ export async function restoreTask(
     .run();
   await db
     .prepare(
-      `UPDATE tasks SET stage='reviewing', head_sha=NULL, approved_sha=NULL, pr_number=NULL, pr_url=NULL, error=NULL, updated_at=? WHERE id=?`,
+      `UPDATE tasks SET stage='reviewing', head_sha=NULL, approved_sha=NULL, merge_sha=NULL, merged_at=NULL, pr_number=NULL, pr_url=NULL, error=NULL, updated_at=? WHERE id=?`,
     )
     .bind(now(), taskId)
     .run();
@@ -974,11 +1102,10 @@ export async function iterateTask(
   if (!s)
     return { ok: false, error: "这个任务没有会话，不能继续迭代；请新建任务" };
   const round = (task.round ?? 1) + 1;
-  const advanced = await db
-    .prepare(
+  const advancedResult = await stageChange(db,db.prepare(
       `WITH advanced AS (
       UPDATE tasks SET stage='running', round=?, plan_approved=0, head_sha=NULL, approved_sha=NULL,
-        pr_number=NULL, pr_url=NULL, error=NULL, updated_at=? WHERE id=? AND stage='published' AND round=? RETURNING id,project_id,round
+        merge_sha=NULL, merged_at=NULL, pr_number=NULL, pr_url=NULL, error=NULL, updated_at=? WHERE id=? AND stage='published' AND round=? RETURNING id,project_id,round
     ), message AS (
       INSERT INTO inbox(session_id,kind,body,created_at) SELECT ?,'message',?,? FROM advanced RETURNING id
     ), released AS (
@@ -993,7 +1120,8 @@ export async function iterateTask(
     ) SELECT round FROM advanced`,
     )
     .bind(round, now(), taskId, task.round ?? 1, s.id, text, now(), now())
-    .first<{ round: number }>();
+    ,taskId,text);
+  const advanced=advancedResult.rows[0] as {round:number}|undefined;
   if (!advanced) return { ok: false, error: "任务状态已经变化，请刷新后重试" };
   await notify(
     taskId,
