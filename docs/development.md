@@ -17,7 +17,8 @@ pnpm install --frozen-lockfile
 | --- | --- |
 | `pnpm run typecheck` | 全工作区 TypeScript 检查 |
 | `pnpm run test` | 纯逻辑、daemon 与 core 测试；未配置数据库时跳过集成用例 |
-| `pnpm run build` | 构建 SDK、Web 与 daemon |
+| `pnpm run build` | 构建 SDK、Web（Cloudflare Workers 目标）与 daemon |
+| `pnpm --filter @loop/web run build:node` | 构建 Node 自托管目标（产物在 `apps/web/node/dist`） |
 | `pnpm --filter @loop/web run typecheck:sdk` | SDK 的独立 DOM 类型检查 |
 | `pnpm --filter @loop/web run test:db` | 使用 Web `.env.local` 中的独立测试数据库 |
 
@@ -26,7 +27,8 @@ pnpm install --frozen-lockfile
 ## 代码结构与约定
 
 - 共享状态机在 `packages/core`，页面文案与阶段能力在 `apps/web/lib/status.ts`。
-- SQL 通过 `pg.ts` 的薄适配层访问 Neon，新增结构写入迁移。
+- SQL 通过 `pg.ts` 的薄适配层访问 Postgres，新增结构写入迁移。
+- 数据库驱动与对象存储按构建目标切换（`lib/database`、`lib/storage`，由 `package.json` 的 `imports` 条件选择）；业务代码只依赖 `pg.ts` 与 `object-store.ts` 的接口。
 - 重复事件、断线重连、租约失效、旧 round 和部分成功是必须覆盖的失败路径。
 - daemon 使用 Node strip-types，避免构造函数参数属性等不支持的 TypeScript 语法。
 - 页面复用现有 Radix UI 组件，并提供加载、空和错误状态。

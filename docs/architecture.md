@@ -4,10 +4,10 @@ Loop 将协调与执行分开：网关记录事实，本地 daemon 驱动智能�
 
 ```mermaid
 flowchart TB
-  UI[Web 工作台] --> Gateway[Cloudflare Worker · HTTP API]
+  UI[Web 工作台] --> Gateway[网关 · HTTP API]
   SDK[网站 SDK / 项目 API / 飞书] --> Gateway
-  Gateway --> PG[(Neon Postgres)]
-  Gateway --> R2[(R2 附件)]
+  Gateway --> PG[(PostgreSQL)]
+  Gateway --> R2[(对象存储 · S3 或 R2)]
   Gateway --> Lark[飞书消息与 Wiki]
   Daemon[本地 Node daemon] <-->|HTTP · 租约 · 事件| Gateway
   Daemon --> ACP[ACP 智能体会话]
@@ -19,6 +19,7 @@ flowchart TB
 
 - `apps/web/app`：页面与 API 路由。
 - `apps/web/lib`：数据访问、任务、身份、空间、集成和持久后台任务。
+- `apps/web/lib/database`、`apps/web/lib/storage`：按部署形态选择的数据库驱动与对象存储实现。
 - `apps/web/components`：页面组件与共享 UI。
 - `apps/web/sdk`：浏览器反馈 SDK；构建产生 `public/sdk.js`。
 - `apps/daemon/src`：ACP 会话、机器发现、worktree、GitHub 流程与发布。

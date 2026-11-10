@@ -1,3 +1,6 @@
 .neon
 node_modules/
 .env.local
+# Node 目标的构建副产物（产物在 node/dist，已被根 .gitignore 的 dist/ 覆盖）
+node/next-env.d.ts
+node/.next/

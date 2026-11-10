@@ -2,7 +2,7 @@
 // 把 /api/* 原样转发到云端，并在服务端附上云端令牌（令牌不进浏览器）。
 
 /** 在本地网关自己处理的路径（登录用本机令牌；状态是本地信息）。其余 /api/* 全部转发。 */
-const LOCAL_ONLY = new Set(["/api/login", "/api/logout", "/api/status", "/api/account/password"]);
+const LOCAL_ONLY = new Set(["/api/login", "/api/logout", "/api/status", "/api/account/password", "/api/health"]);
 
 export function shouldForward(pathname: string): boolean {
   if (!pathname.startsWith("/api/")) return false;

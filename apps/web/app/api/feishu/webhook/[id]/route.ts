@@ -20,7 +20,7 @@ export async function POST(
   const raw = await req.text();
   if (raw.length > 100000) return fail(413, "消息过大");
   // 回调要求快速返回，状态记录用 waitUntil 异步写，失败不影响本次响应。
-  const { waitUntil } = await import("cloudflare:workers");
+  const { waitUntil } = await import("#loop-runtime-env");
   try {
     const secrets = await unseal<FeishuSecrets>(
       binding.secrets,

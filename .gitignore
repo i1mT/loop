@@ -24,3 +24,6 @@ coverage/
 # 本机维护说明与临时验证资料。
 AGENTS.local.md
 .scratchpad/
+# 一次性工具链缓存（corepack / npm / pnpm store），不应提交。
+.tmp-tool/
+.pnpm-store/

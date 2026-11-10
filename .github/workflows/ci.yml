@@ -22,6 +22,8 @@ jobs:
       - run: pnpm run typecheck
       - run: pnpm run test
       - run: pnpm run build
+      # Node 自托管目标（PostgreSQL + S3）单独构建，避免只有 Workers 目标被测到。
+      - run: pnpm --filter @loop/web run build:node
       - run: git diff --exit-code
   secrets:
     runs-on: ubuntu-latest
