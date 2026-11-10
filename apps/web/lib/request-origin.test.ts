@@ -10,9 +10,8 @@ const load = async () => {
   return (await import("./public-url.ts")).requestOrigin;
 };
 
-const headers = (map: Record<string, string>) => ({
-  get: (key: string) => map[key.toLowerCase()] ?? null,
-});
+// 直接用真实 Headers：requestOrigin 只依赖 get()，但用真类型能避免替身与生产行为漂移。
+const headers = (map: Record<string, string>) => new Headers(map);
 
 test("反代给出的协议优先于对外地址配置", async () => {
   const requestOrigin = await load();
@@ -37,4 +36,19 @@ test("多值与畸形头部不会把协议判错", async () => {
 test("保留端口，不吞掉 host 里的冒号", async () => {
   const requestOrigin = await load();
   assert.equal(requestOrigin(headers({ host: "127.0.0.1:3000" }), "127.0.0.1:3000"), "http://127.0.0.1:3000");
+});
+
+test("publicOrigin：IP 直连允许 HTTP，域名仍要求 HTTPS", async () => {
+  const { publicOrigin } = await import("./public-url.ts");
+  // IP + 端口直连没有证书，强制 HTTPS 会让后台通知整体不可用。
+  assert.equal(publicOrigin("http://118.196.30.108:3220"), "http://118.196.30.108:3220");
+  assert.equal(publicOrigin("http://127.0.0.1:3000"), "http://127.0.0.1:3000");
+  assert.equal(publicOrigin("http://192.168.1.10"), "http://192.168.1.10");
+  assert.equal(publicOrigin("https://loop.example.com"), "https://loop.example.com");
+  // 域名走 HTTP 仍拒绝：对公网暴露的会话必须加密。
+  assert.throws(() => publicOrigin("http://loop.example.com"), /HTTPS/);
+  // 结构性错误一律拒绝，避免把通知发到异常地址。
+  assert.throws(() => publicOrigin("https://u:p@loop.example.com"), /HTTPS/);
+  assert.throws(() => publicOrigin("https://loop.example.com/path"), /HTTPS/);
+  assert.throws(() => publicOrigin("https://loop.example.com?a=1"), /HTTPS/);
 });
