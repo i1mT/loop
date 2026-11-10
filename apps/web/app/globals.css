@@ -2,6 +2,12 @@
 @import "@fontsource-variable/geist-mono";
 @import "tailwindcss";
 
+/* Tailwind v4 默认从 CSS 所在目录自动探测源码，但 Node 目标的构建根在 apps/web/node，
+   自动探测认不出上一层源码，工具类会全部丢失（页面能开但没样式）。
+   这里显式声明扫描范围，两个构建目标都适用。 */
+@source "./**/*.{ts,tsx}";
+@source "../components/**/*.{ts,tsx}";
+
 /* 设计令牌：暖纸底、墨色、唯一的信号橙。状态色只给“正在发生”的事，且永远配文字。 */
 @theme {
   --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;

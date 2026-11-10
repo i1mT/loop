@@ -3,6 +3,7 @@
 // 而 Node 目标恰恰不能带那个插件。appDir 指回上一层，源码与产物都不因此改动。
 import { defineConfig } from "vite";
 import vinext from "vinext";
+import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 
 const root = path.dirname(new URL(import.meta.url).pathname);
@@ -10,7 +11,7 @@ const app = path.resolve(root, "..");
 
 export default defineConfig({
   root,
-  plugins: [vinext({ appDir: app })],
+  plugins: [tailwindcss(), vinext({ appDir: app })],
   publicDir: path.join(app, "public"),
   resolve: {
     alias: [
