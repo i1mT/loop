@@ -1,0 +1,26 @@
+# 构建上下文是仓库根，这里排除不需要进入镜像的内容：
+# 依赖目录由镜像内 pnpm install 重建，产物与缓存都会在构建阶段生成。
+**/node_modules
+**/.next
+**/dist
+**/.output
+**/.cloudflare
+**/.vinext
+**/coverage
+
+.git
+.gitignore
+.github
+
+# 环境与凭证文件绝不进入镜像；运行期通过 env_file 注入。
+.env
+.env.*
+!.env.example
+**/.dev.vars
+**/.dev.vars.*
+
+**/*.log
+.DS_Store
+.scratchpad
+.tmp-tool
+.pnpm-store

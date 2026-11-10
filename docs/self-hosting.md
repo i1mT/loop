@@ -75,14 +75,24 @@ node --env-file=/path/to/loop.env --experimental-strip-types scripts/create-user
 
 ### Docker
 
-仓库根目录的 `Dockerfile` 构建 Node 目标；[docker-compose.yml](../deploy/node/docker-compose.yml) 提供网关 + Postgres + MinIO 的单机示例。
+[apps/web/Dockerfile](../apps/web/Dockerfile) 构建 Node 目标；仓库根目录的 [docker-compose.yml](../docker-compose.yml) 提供网关 + Postgres + MinIO 的单机示例。
 
 ```bash
 cp config/node.env.example .env      # 填写后 chmod 600
-docker compose -f deploy/node/docker-compose.yml up -d --build
+docker compose up -d --build
 ```
 
+compose 文件放在仓库根：`env_file` 与 `build.context` 都相对它所在的目录解析，因此 `.env` 就在根目录，构建上下文也正是镜像需要的仓库根。
+
 compose 里的数据库口令与 MinIO 账号只用于本机演示，生产必须替换，并改用受管的数据库与对象存储。`minio-init` 会创建桶，桶已存在时命令失败但可忽略。
+
+用自己的数据库或对象存储（不使用内置的 postgres / minio）时，只起网关：
+
+```bash
+docker compose up -d --no-deps --build gateway
+```
+
+`--no-deps` 跳过内置服务，避免 compose 去拉 MinIO 镜像。这时 `.env` 里的 `DATABASE_URL`、`S3_ENDPOINT` 等必须指向真实地址，不要留空依赖默认值。
 
 镜像内以非 root 用户运行，`HEALTHCHECK` 请求 `/api/health`；该端点不需要登录，只回答进程能否连上数据库。
 
@@ -93,8 +103,8 @@ compose 里的数据库口令与 MinIO 账号只用于本机演示，生产必�
 ### 升级
 
 ```bash
-docker compose -f deploy/node/docker-compose.yml build gateway
-docker compose -f deploy/node/docker-compose.yml up -d gateway
+docker compose build gateway
+docker compose up -d gateway
 ```
 
 升级前备份数据库与桶。迁移在启动时幂等执行，但不要在未备份的生产库上直接试新版本。daemon 需要单独更新并重启，见 [智能体与机器](#智能体与机器)。
