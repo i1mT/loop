@@ -15,7 +15,16 @@ export function objectStoreFromEnv(): ObjectStore {
   // 自建端点（MinIO 等）默认使用 path-style；AWS S3 与 R2 的 S3 端点用 virtual-hosted。
   const forcePathStyle = env.S3_FORCE_PATH_STYLE ? text(env.S3_FORCE_PATH_STYLE) !== "false" : !!endpoint;
   const client = createS3Client({ bucket, region, endpoint, accessKeyId, secretAccessKey, forcePathStyle });
-  return s3ObjectStore(client, bucket);
+  return s3ObjectStore(client, bucket, prefix(text(env.S3_PREFIX)));
 }
 
 const text = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+
+/**
+ * 把 S3_PREFIX 归一化成“若干层目录 + 结尾斜杠”的形式：loop / loop/ / /loop/ 都得到 "loop/"。
+ * 留空表示直接放在桶根，便于多个部署共用同一个桶或桶根已有其他内容。
+ */
+export function prefix(value: string): string {
+  const trimmed = value.trim().replace(/^\/+|\/+$/g, "");
+  return trimmed ? `${trimmed}/` : "";
+}

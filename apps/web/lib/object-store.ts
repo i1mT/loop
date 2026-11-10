@@ -27,7 +27,7 @@ export interface UploadedPart {
 /** 分片上传句柄：发布守护进程安装包时用，支持断点续传与大文件 */
 export interface MultipartUpload {
   uploadId: string;
-  uploadPart(partNumber: number, value: ReadableStream | ArrayBuffer): Promise<UploadedPart>;
+  uploadPart(partNumber: number, value: ReadableStream | ArrayBuffer | Uint8Array | string): Promise<UploadedPart>;
   abort(): Promise<void>;
   complete(parts: UploadedPart[]): Promise<void>;
 }
