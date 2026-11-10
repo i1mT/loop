@@ -1,11 +1,16 @@
-import { env } from "cloudflare:workers";
+// 网关配置：Workers 从 Worker Secret / 绑定读取，Node 从环境变量读取（见 lib/runtime/*）。
+// 对象存储按部署形态选择：Workers 用 R2 绑定，Node 用 S3（含兼容端点）。业务代码只拿到窄接口。
+import type { ObjectStore } from "./object-store.ts";
+import { objectStoreFromEnv } from "#loop-object-store";
+import { rawEnv } from "#loop-runtime-env";
 
 export interface GatewayEnv {
-  /** Neon Postgres 连接串（池化）。云端是 Worker Secret，本地在 .dev.vars。不入库。 */
+  /** Postgres 连接串（池化）。云端是 Worker Secret，本地在 .dev.vars，Node 部署在 .env。不入库。 */
   DATABASE_URL: string;
   /** 对外可访问的网关地址，用于后台通知。 */
   LOOP_PUBLIC_URL: string;
-  FILES: R2Bucket;
+  /** 对象存储（R2 或 S3）；不是 Worker 绑定，而是按部署形态构造好的读取器。 */
+  FILES: ObjectStore;
   /** API 令牌：脚本与本地网关调用云端接口用（Bearer），不能用来登录页面。本地模式下它是本机 cookie 的签名密钥。 */
   LOOP_ADMIN_TOKEN: string;
   /** 守护进程令牌（领取、回传事件、读取收件箱）。 */
@@ -20,6 +25,30 @@ export interface GatewayEnv {
   LOOP_LOCAL?: string;
 }
 
+/** 读取字符串配置；空字符串按未配置处理，避免把空值当成有效密钥。 */
+const text = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+
+/** 每个进程/isolate 只构造一次存储客户端（S3 客户端与连接池都不该按请求重建）。 */
+let files: ObjectStore | null = null;
+
+/** 惰性构造存储：没有配置对象存储的脚本与测试（迁移、账号创建）不该被迫连接存储。 */
+function filesStore(): ObjectStore {
+  return (files ??= objectStoreFromEnv());
+}
+
 export function getEnv(): GatewayEnv {
-  return env as unknown as GatewayEnv;
+  const env = rawEnv();
+  return {
+    DATABASE_URL: text(env.DATABASE_URL),
+    LOOP_PUBLIC_URL: text(env.LOOP_PUBLIC_URL),
+    get FILES() {
+      return filesStore();
+    },
+    LOOP_ADMIN_TOKEN: text(env.LOOP_ADMIN_TOKEN),
+    LOOP_DAEMON_TOKEN: text(env.LOOP_DAEMON_TOKEN),
+    BETTER_AUTH_SECRET: text(env.BETTER_AUTH_SECRET),
+    TYPESAFE_API_KEY: text(env.TYPESAFE_API_KEY) || undefined,
+    FEISHU_ENCRYPTION_KEY: text(env.FEISHU_ENCRYPTION_KEY) || undefined,
+    LOOP_LOCAL: text(env.LOOP_LOCAL) || undefined,
+  };
 }

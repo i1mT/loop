@@ -1,5 +1,6 @@
 import { getEnv } from "@/lib/env.ts";
 import { fail, json, readJson } from "@/lib/http.ts";
+import type { UploadedPart } from "@/lib/object-store.ts";
 
 const validFile = (name: string) => name === "manifest.json" || /^loopd-[a-zA-Z0-9.-]+-(darwin|linux)-(arm64|x64)\.tar\.gz$/.test(name);
 const key = (file: string) => `daemon-releases/${file}`;
@@ -11,7 +12,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ file: st
     const target = new URL(req.url).searchParams.get("target") ?? "";
     if (!/^(darwin|linux)-(arm64|x64)$/.test(target)) return fail(400, "不支持的平台");
     const manifest = await files.get(key("manifest.json"));
-    const data = manifest ? await manifest.json<Record<string, { version: string; file: string; sha256: string }>>() : {};
+    const data = manifest ? await new Response(manifest.body).json<Record<string, { version: string; file: string; sha256: string }>>() : {};
     const release = data[target];
     if (!release) return fail(404, "该平台的安装包尚未发布");
     return new Response(`${release.version} ${release.file} ${release.sha256}\n`, { headers: { "content-type": "text/plain", "cache-control": "no-store" } });
@@ -49,9 +50,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ file: s
     const upload = await bucket.createMultipartUpload(key(file), { httpMetadata: { contentType: "application/gzip" }, customMetadata: {sha256:metadata?.sha256 ?? ""} });
     return json({ uploadId: upload.uploadId });
   }
-  const body = await readJson<{ uploadId?: string; parts?: R2UploadedPart[] }>(req);
+  const body = await readJson<{ uploadId?: string; parts?: UploadedPart[] }>(req);
   if (!body?.uploadId) return fail(400, "需要 uploadId");
-  const upload = bucket.resumeMultipartUpload(key(file), body.uploadId);
+  const upload = await bucket.resumeMultipartUpload(key(file), body.uploadId);
   if (action === "abort") { await upload.abort(); return json({ ok: true }); }
   if (action !== "complete" || !Array.isArray(body.parts)) return fail(400, "需要上传分片");
   await upload.complete(body.parts);
@@ -74,5 +75,6 @@ export async function PUT(req: Request, { params }: { params: Promise<{ file: st
   const uploadId = url.searchParams.get("uploadId");
   const partNumber = Number(url.searchParams.get("partNumber"));
   if (!uploadId || !Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000) return fail(400, "分片无效");
-  return json(await bucket.resumeMultipartUpload(key(file), uploadId).uploadPart(partNumber, req.body));
+  const upload = await bucket.resumeMultipartUpload(key(file), uploadId);
+  return json(await upload.uploadPart(partNumber, req.body));
 }

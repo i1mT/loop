@@ -79,7 +79,7 @@ flowchart LR
 
 ## 快速开始
 
-需要 **Node.js 24+、pnpm、Git、已登录的 GitHub CLI**，以及至少一个配置好的智能体。网关还需要自己的 **Neon Postgres 数据库**；线上部署使用 Cloudflare Workers 与 R2。
+需要 **Node.js 24+、pnpm、Git、已登录的 GitHub CLI**，以及至少一个配置好的智能体。网关还需要自己的 **PostgreSQL 数据库**；线上可以部署到 Cloudflare Workers + R2，也可以用自己的服务器 + S3 兼容存储。
 
 ```bash
 git clone https://github.com/i1mT/loop.git
@@ -118,7 +118,7 @@ export LOOPD_DAEMON_TOKEN='your-generated-daemon-token'
 
 打开 **http://localhost:5190**，登录刚创建的账号，创建空间、接入机器、创建项目，然后提交任务。浏览器登录使用邮箱与密码；API 令牌不能用来登录页面。
 
-生产部署、本机转发模式、备份与故障恢复见 [自托管指南](docs/self-hosting.md)。
+生产部署（含 Node + PostgreSQL + S3 的 Docker 方式）、本机转发模式、备份与故障恢复见 [自托管指南](docs/self-hosting.md)。
 
 ## 接入你的项目
 
@@ -143,7 +143,7 @@ export LOOPD_DAEMON_TOKEN='your-generated-daemon-token'
 
 | 模块 | 职责 | 技术 |
 | --- | --- | --- |
-| `apps/web` | Web 工作台、HTTP API、身份、任务、飞书后台同步 | vinext、React、Cloudflare Workers、Neon、R2 |
+| `apps/web` | Web 工作台、HTTP API、身份、任务、飞书后台同步 | vinext、React、PostgreSQL、S3 或 R2 |
 | `apps/daemon` | 机器发现、会话、worktree、检查、PR 与发布 | Node.js、ACP、Git、GitHub CLI |
 | `packages/core` | 状态机、属性和会话事件协议 | TypeScript |
 | `apps/web/sdk` | 可嵌入网站的反馈入口 | TypeScript |

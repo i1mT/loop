@@ -1,7 +1,7 @@
 // better-auth 实例工厂（不依赖 Cloudflare 运行时，Node 测试也能用）。
-// 数据库用 Neon 的 Pool（WebSocket）：Workers 里每个请求新建一个，用完关闭。
+// 连接池按部署形态选择：Workers 用 Neon 的 WebSocket Pool（每请求新建），Node 用 node-postgres 连接池。
 import { betterAuth } from "better-auth";
-import { Pool } from "@neondatabase/serverless";
+import { createAuthPool } from "#loop-auth-pool";
 
 export interface AuthDeps {
   databaseUrl: string;
@@ -10,7 +10,7 @@ export interface AuthDeps {
 }
 
 export function createAuth(deps: AuthDeps) {
-  const pool = new Pool({ connectionString: deps.databaseUrl });
+  const { pool, close } = createAuthPool(deps.databaseUrl);
   const auth = betterAuth({
     database: pool,
     secret: deps.secret,
@@ -19,6 +19,6 @@ export function createAuth(deps: AuthDeps) {
     emailAndPassword: { enabled: true, disableSignUp: true, minPasswordLength: 8, maxPasswordLength: 128 },
     session: { expiresIn: 60 * 60 * 24 * 30, updateAge: 60 * 60 * 24, cookieCache: { enabled: true, maxAge: 300 } },
   });
-  return { auth, close: () => pool.end().catch(() => undefined) };
+  return { auth, close };
 }
 export type Auth = ReturnType<typeof createAuth>["auth"];
