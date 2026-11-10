@@ -79,8 +79,16 @@ node --env-file=/path/to/loop.env --experimental-strip-types scripts/create-user
 
 ```bash
 cp config/node.env.example .env      # 填写后 chmod 600
-docker compose up -d --build
+docker compose up -d --build         # 只起网关，连 .env 里的外部数据库与对象存储
 ```
+
+本机试用需要内置 Postgres 与 MinIO 时，加上 profile：
+
+```bash
+docker compose --profile builtin up -d --build
+```
+
+内置服务在 `builtin` profile 后面，默认不启动——生产用云上数据库与对象存储时，不该顺带跑起本地的 Postgres 和 MinIO。
 
 compose 文件放在仓库根：`env_file` 与 `build.context` 都相对它所在的目录解析，因此 `.env` 就在根目录，构建上下文也正是镜像需要的仓库根。
 
@@ -88,13 +96,7 @@ compose 文件放在仓库根：`env_file` 与 `build.context` 都相对它所�
 
 compose 里的数据库口令与 MinIO 账号只用于本机演示，生产必须替换，并改用受管的数据库与对象存储。`minio-init` 会创建桶，桶已存在时命令失败但可忽略。
 
-用自己的数据库或对象存储（不使用内置的 postgres / minio）时，只起网关：
-
-```bash
-docker compose up -d --no-deps --build gateway
-```
-
-`--no-deps` 跳过内置服务，避免 compose 去拉 MinIO 镜像。这时 `.env` 里的 `DATABASE_URL`、`S3_ENDPOINT` 等必须指向真实地址，不要留空依赖默认值。
+`.env` 里的 `DATABASE_URL`、`S3_ENDPOINT` 等必须指向真实地址，不要留空依赖默认值——默认值里的 `postgres`、`minio` 是内置服务的域名，默认不启动时解析不到。
 
 镜像内以非 root 用户运行，`HEALTHCHECK` 请求 `/api/health`；该端点不需要登录，只回答进程能否连上数据库。
 

@@ -1,4 +1,5 @@
 import { sessionUser } from "../auth-server.ts";
+import { requestOrigin } from "@/lib/public-url.ts";
 import { getEnv } from "../env.ts";
 import { getDb } from "../db.ts";
 import { requireRole, fail } from "../http.ts";
@@ -9,7 +10,7 @@ export async function feishuAccess(req: Request, manage = false) {
   const db = await getDb(),
     spaceId = requestSpace(req);
   if (!spaceId || spaceId === "space_none") return fail(400, "请先选择空间");
-  const session = await sessionUser(req.headers, new URL(req.url).origin);
+  const session = await sessionUser(req.headers, requestOrigin(req.headers, req.headers.get("host") ?? new URL(req.url).host));
   let userId = session?.id ?? null;
   const bearer = req.headers.get("authorization");
   const email =

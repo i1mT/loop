@@ -4,6 +4,7 @@ import { getEnv } from "@/lib/env.ts";
 import { parseLocalConfig } from "@/lib/local-mode.ts";
 import { LOCAL_COOKIE, signLocalSession } from "@/lib/local-session.ts";
 import { clearFailures, recordFailure, tooManyFailures } from "@/lib/login-throttle.ts";
+import { requestOrigin } from "@/lib/public-url.ts";
 
 // 邮箱 + 密码登录。云端用 better-auth；本地模式把凭据交给云端验证，通过后签发本机 cookie。
 export async function POST(req: Request) {
@@ -13,7 +14,8 @@ export async function POST(req: Request) {
   const key = `${req.headers.get("cf-connecting-ip") ?? req.headers.get("x-forwarded-for") ?? "local"}|${email}`;
   if (tooManyFailures(key)) return fail(429, "尝试次数过多，请一分钟后再试");
 
-  const origin = new URL(req.url).origin;
+  // 与页面布局用同一套 origin 推导，否则登录发的 baseURL 与校验用的不一致，会话会被判无效。
+  const origin = requestOrigin(req.headers, req.headers.get("host") ?? new URL(req.url).host);
   const secure = origin.startsWith("https:") ? "; Secure" : "";
 
   if (isLocalMode()) {

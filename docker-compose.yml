@@ -1,10 +1,9 @@
-# 单机部署示例：网关 + Postgres + MinIO。
+# 网关部署。数据库与对象存储默认用 .env 里配置的外部服务（云上 PostgreSQL / S3）。
 # 在仓库根目录执行：
-#   cp config/node.env.example .env      # 填写后 chmod 600
-#   docker compose up -d --build         # 网关 + 内置数据库与对象存储
-#   docker compose up -d --no-deps --build gateway   # 只用网关，连外部 PostgreSQL / S3
-# 生产环境请把数据库与对象存储换成托管服务，按自己的备份、鉴权与网络策略配置；
-# 下面的口令只用于本机演示，必须替换。
+#   cp config/node.env.example .env
+#   docker compose up -d --build                     # 只起网关，连 .env 指定的外部服务
+#   docker compose --profile builtin up -d --build   # 额外起内置 Postgres 与 MinIO（本机试用）
+# 内置服务的口令只用于本机演示，必须替换；生产请用受管数据库与对象存储。
 #
 # 放在仓库根是有意的：env_file 与 build.context 都相对本文件所在目录解析，
 # 这样 .env 就在根目录，构建上下文也正是 Dockerfile 需要的仓库根。
@@ -25,16 +24,13 @@ services:
     ports:
       # 左右两侧用同一个 PORT：容器监听什么端口，宿主机就映射什么端口。
       - "${PORT:-3000}:${PORT:-3000}"
-    # 用内置服务时等它们就绪再起网关；用外部 PostgreSQL / S3 时跳过：
-    #   docker compose up -d --no-deps gateway
-    depends_on:
-      postgres:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
+    # 不依赖内置服务：默认连 .env 里的外部数据库与对象存储。
+    # 需要内置服务时用 --profile builtin 启动，compose 会按健康检查等待它们。
     restart: unless-stopped
 
+  # 仅本机试用：docker compose --profile builtin up -d
   postgres:
+    profiles: ["builtin"]
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-loop}
@@ -50,6 +46,7 @@ services:
     restart: unless-stopped
 
   minio:
+    profiles: ["builtin"]
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
@@ -67,6 +64,7 @@ services:
 
   # 一次性任务：启动时创建桶，退出即结束。桶已存在时命令失败但不影响其它服务。
   minio-init:
+    profiles: ["builtin"]
     image: minio/mc:latest
     depends_on:
       minio:

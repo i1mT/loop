@@ -1,4 +1,5 @@
 import { canonicalPath } from "./machine-access/path.ts";
+import { requestOrigin } from "@/lib/public-url.ts";
 import { authenticateDaemon } from "./machine-access/daemon-auth.ts";
 import { machineRequestAllowed, rememberUser } from "./machine-access/request.ts";
 import { getEnv } from "./env.ts";
@@ -28,7 +29,7 @@ export async function authRole(req: Request): Promise<"admin" | "daemon" | null>
     if (canonicalPath(req)?.startsWith("/api/daemon/") && await authenticateDaemon(await getDb(), req, t, env.LOOP_DAEMON_TOKEN)) return "daemon";
     return null;
   }
-  if (await sessionUser(req.headers, new URL(req.url).origin)) return "admin";
+  if (await sessionUser(req.headers, requestOrigin(req.headers, req.headers.get("host") ?? new URL(req.url).host))) return "admin";
   return null;
 }
 
@@ -37,7 +38,7 @@ async function pinSpace(req: Request): Promise<Response | null> {
   const token = bearer(req);
   let userId: string | null = null;
   if (!token) {
-    userId = (await sessionUser(req.headers, new URL(req.url).origin))?.id ?? null;
+    userId = (await sessionUser(req.headers, requestOrigin(req.headers, req.headers.get("host") ?? new URL(req.url).host)))?.id ?? null;
   } else if (token === getEnv().LOOP_ADMIN_TOKEN) {
     // 本地网关换成云端令牌转发，并用 x-loop-user 带上登录邮箱
     const email = req.headers.get("x-loop-user")?.trim().toLowerCase();

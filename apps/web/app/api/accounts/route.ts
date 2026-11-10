@@ -1,4 +1,5 @@
 import { createAccount, listAccounts, setAccountSpaces } from "@/lib/accounts.ts";
+import { requestOrigin } from "@/lib/public-url.ts";
 import { getDb } from "@/lib/db.ts";
 import { getEnv } from "@/lib/env.ts";
 import { fail, json, readJson, requireRole } from "@/lib/http.ts";
@@ -8,7 +9,7 @@ import { isSuperAdmin } from "@/lib/spaces.ts";
 async function actorId(req: Request): Promise<string | null> {
   const auth = req.headers.get("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (!token) return (await sessionUser(req.headers, new URL(req.url).origin))?.id ?? null;
+  if (!token) return (await sessionUser(req.headers, requestOrigin(req.headers, req.headers.get("host") ?? new URL(req.url).host)))?.id ?? null;
   if (token !== getEnv().LOOP_ADMIN_TOKEN) return null;
   const email = req.headers.get("x-loop-user")?.trim().toLowerCase();
   if (!email) return null;
