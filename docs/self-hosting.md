@@ -41,6 +41,7 @@ daemon 只通过 HTTP 访问网关，不连接数据库，也不读取数据库�
 | `LOOP_ADMIN_TOKEN` | 脚本调用管理 API 的 Bearer 令牌，不能登录页面 |
 | `FEISHU_ENCRYPTION_KEY` | 飞书凭证加密主密钥；留空则不启用飞书 |
 | `S3_BUCKET` / `S3_REGION` | 桶名与区域 |
+| `S3_PREFIX` | 可选：桶内路径前缀，多个部署共用一个桶时用于隔离；留空放桶根 |
 | `S3_ENDPOINT` | 自建或兼容端点；用 AWS S3 时留空 |
 | `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | 静态凭证；留空则走实例角色等默认凭证链 |
 | `S3_FORCE_PATH_STYLE` | 自建端点通常需要 `true` |

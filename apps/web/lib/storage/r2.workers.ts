@@ -14,7 +14,7 @@ type R2BucketLike = {
   head(key: string): Promise<{ size: number; customMetadata?: Record<string, string> } | null>;
   createMultipartUpload(key: string, options?: Record<string, unknown>): Promise<{ uploadId: string }>;
   resumeMultipartUpload(key: string, uploadId: string): {
-    uploadPart(partNumber: number, value: ReadableStream | ArrayBuffer): Promise<UploadedPart>;
+    uploadPart(partNumber: number, value: ReadableStream | ArrayBuffer | Uint8Array | string): Promise<UploadedPart>;
     abort(): Promise<void>;
     complete(parts: UploadedPart[]): Promise<unknown>;
   };

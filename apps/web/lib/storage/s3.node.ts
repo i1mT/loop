@@ -50,13 +50,15 @@ function bodyToStream(body: unknown): ReadableStream {
   });
 }
 
-export function s3ObjectStore(client: S3Client, bucket: string): ObjectStore {
+export function s3ObjectStore(client: S3Client, bucket: string, prefix = ""): ObjectStore {
+  // 前缀只加一次：所有读写与分片上传都经 objectKey，桶内布局与 R2 目标保持一致。
+  const objectKey = (key: string): string => `${prefix}${key}`;
   return {
     async put(key, value, options): Promise<void> {
       await client.send(
         new PutObjectCommand({
           Bucket: bucket,
-          Key: key,
+          Key: objectKey(key),
           Body: toBytes(value),
           ContentType: options?.httpMetadata?.contentType,
           Metadata: options?.customMetadata,
@@ -66,7 +68,7 @@ export function s3ObjectStore(client: S3Client, bucket: string): ObjectStore {
 
     async get(key): Promise<StoredObject | null> {
       try {
-        const result = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        const result = await client.send(new GetObjectCommand({ Bucket: bucket, Key: objectKey(key) }));
         if (!result.Body) return null;
         return {
           body: bodyToStream(result.Body),
@@ -83,7 +85,7 @@ export function s3ObjectStore(client: S3Client, bucket: string): ObjectStore {
 
     async head(key): Promise<ObjectHead | null> {
       try {
-        const result = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+        const result = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: objectKey(key) }));
         return { size: Number(result.ContentLength ?? 0), customMetadata: result.Metadata };
       } catch (error) {
         if (isMissingObject(error)) return null;
@@ -95,17 +97,17 @@ export function s3ObjectStore(client: S3Client, bucket: string): ObjectStore {
       const created = await client.send(
         new CreateMultipartUploadCommand({
           Bucket: bucket,
-          Key: key,
+          Key: objectKey(key),
           ContentType: options?.httpMetadata?.contentType,
           Metadata: options?.customMetadata,
         }),
       );
       if (!created.UploadId) throw new Error("S3 没有返回 uploadId");
-      return multipartHandle(client, bucket, key, created.UploadId);
+      return multipartHandle(client, bucket, objectKey(key), created.UploadId);
     },
 
     async resumeMultipartUpload(key, uploadId): Promise<MultipartUpload> {
-      return multipartHandle(client, bucket, key, uploadId);
+      return multipartHandle(client, bucket, objectKey(key), uploadId);
     },
   };
 }
