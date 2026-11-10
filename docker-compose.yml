@@ -20,8 +20,11 @@ services:
       S3_BUCKET: ${S3_BUCKET:-loop-files}
       S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
+      # 容器内监听端口；端口映射与健康检查都跟着同一个值走，改 .env 的 PORT 即可。
+      PORT: ${PORT:-3000}
     ports:
-      - "${LOOP_PORT:-3000}:3000"
+      # 左右两侧用同一个 PORT：容器监听什么端口，宿主机就映射什么端口。
+      - "${PORT:-3000}:${PORT:-3000}"
     # 用内置服务时等它们就绪再起网关；用外部 PostgreSQL / S3 时跳过：
     #   docker compose up -d --no-deps gateway
     depends_on:
