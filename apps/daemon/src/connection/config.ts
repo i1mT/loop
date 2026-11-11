@@ -3,9 +3,11 @@ import { join } from "node:path";
 
 export interface Connection { gateway: string; token: string; machineId: string; name?: string }
 
+// 协议不由这里限制：自建网关常用 HTTP + IP 先跑通，是否上 HTTPS 由部署者决定。
+// 只拒绝会把凭证带进地址或不是网关根地址的写法。
 export function gatewayUrl(input: string): string {
   const url = new URL(input);
-  if (url.username || url.password || url.pathname !== "/" || url.search || url.hash || (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname)))) throw new Error("请输入 HTTPS 网站地址；本机测试允许 http://localhost");
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || url.search || url.hash) throw new Error("请输入 HTTP(S) 网站地址，例如 http://118.196.30.108:3220");
   return url.origin;
 }
 

@@ -6,12 +6,15 @@ import { join } from "node:path";
 import { gatewayUrl, readConnection, saveConnection } from "./connection/config.ts";
 import { lockDaemon, runningPid } from "./connection/process.ts";
 
-test("机器连接配置：拒绝远端明文地址、凭证私有保存、原子替换与进程互斥", () => {
+test("机器连接配置：接受 HTTP 网关、拒绝凭证与子路径、私有保存与进程互斥", () => {
   const dir=mkdtempSync(join(tmpdir(),"loop-connection-"));
   try {
     assert.equal(readConnection(dir),null);
     assert.equal(gatewayUrl("https://example.test/"),"https://example.test");
-    for (const value of ["http://example.test","https://user:pw@example.test","https://example.test/api","file:///tmp/test"]) assert.throws(()=>gatewayUrl(value));
+    // 自建网关常用 HTTP + IP，协议不该被限制；只有真正有害的写法才拒绝。
+    assert.equal(gatewayUrl("http://118.196.30.108:3220"),"http://118.196.30.108:3220");
+    assert.equal(gatewayUrl("http://example.test/api"),"http://example.test");
+    for (const value of ["https://user:pw@example.test","file:///tmp/test"]) assert.throws(()=>gatewayUrl(value));
     const config={gateway:"https://example.test",machineId:"m-test",token:"lm_test"};
     saveConnection(dir,config);
     assert.deepEqual(readConnection(dir),config);
