@@ -11,7 +11,11 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 export function ConnectMachineDialog({ open, onOpenChange, machineId }: { open: boolean; onOpenChange: (open: boolean) => void; machineId?: string }) {
   const releases = useApi<Record<string,{file:string}>>(open ? "/api/daemon-releases/manifest.json" : null,{poll:10000});
-  const releaseReady = ["darwin-arm64","darwin-x64","linux-arm64","linux-x64"].every(target=>releases.data?.[target]?.file);
+  // install.sh 会按服机器自身的 uname 选包，所以只要清单里至少有一个平台可用就能生成命令。
+  // 不要求四个平台全齐：只发布了 macOS 包时，Linux 用户不该被一起挡住。
+  const SUPPORTED = ["darwin-arm64","darwin-x64","linux-arm64","linux-x64"];
+  const available = SUPPORTED.filter((target) => releases.data?.[target]?.file);
+  const releaseReady = available.length > 0;
   const status = useApi<{ base: string }>("/api/status");
   const [name,setName] = useState("我的电脑");
   const [pairing,setPairing] = useState<Pairing | null>(null);
@@ -37,6 +41,7 @@ export function ConnectMachineDialog({ open, onOpenChange, machineId }: { open: 
         <p role="status" className="text-ink-2">执行完成后关闭窗口，稍等片刻即可在列表中看到在线机器。</p>
       </> : <Button variant="primary" disabled={!base || !name.trim() || !releaseReady} loading={busy} onClick={()=>void generate()}>生成安装命令</Button>}
       {!releaseReady && <p role="status" className="text-ink-2">{releases.error ? "安装包暂时无法下载，请稍后重试。" : "正在检查可用的安装包……"}</p>}
+      {releaseReady && available.length < SUPPORTED.length && <p role="status" className="text-ink-2">已发布：{available.join("、")}。其他平台需要维护者补充打包。</p>}
       {error && <p role="alert" className="text-bad">{error}</p>}
       <p className="text-xs leading-relaxed text-ink-2">支持 macOS（Apple 芯片、Intel）与 Linux（ARM64、x64）；不需要克隆仓库或安装 Node。</p>
       {pairing && <div className="flex justify-end gap-2"><Button loading={busy} onClick={()=>void generate()}>重新生成</Button><Button variant="primary" onClick={()=>close(false)}>完成</Button></div>}
