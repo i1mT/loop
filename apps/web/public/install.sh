@@ -11,7 +11,6 @@ while [ "$#" -gt 0 ]; do
     *) printf '未知参数：%s\n' "$1" >&2; exit 1 ;;
   esac
 done
-case "$gateway" in https://*) ;; *) printf '请使用网站生成的 HTTPS 安装命令。\n' >&2; exit 1 ;; esac
 case "$(uname -s)" in Darwin) os=darwin ;; Linux) os=linux ;; *) printf '目前支持 macOS 与 Linux。Windows 请使用 WSL2 安装。\n' >&2; exit 1 ;; esac
 case "$(uname -m)" in arm64|aarch64) cpu=arm64 ;; x86_64|amd64) cpu=x64 ;; *) printf '暂不支持这台电脑的处理器。\n' >&2; exit 1 ;; esac
 command -v curl >/dev/null || { printf '请先安装 curl。\n' >&2; exit 1; }
@@ -20,7 +19,7 @@ root="${HOME}/.local/share/loop"
 mkdir -p "$root/versions" "${HOME}/.local/bin"
 tmp="$(mktemp -d "$root/.install.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
-curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --proto '=https' --proto-redir '=https' "$gateway/api/daemon-releases/latest?target=$os-$cpu" > "$tmp/release"
+curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 "$gateway/api/daemon-releases/latest?target=$os-$cpu" > "$tmp/release"
 read -r version file sha < "$tmp/release"
 # 下载清单只允许文件名，不能让其成为本机路径或 shell 指令。
 case "$version" in ''|*[!a-zA-Z0-9.-]*) printf '版本信息无效。\n' >&2; exit 1 ;; esac
@@ -31,7 +30,7 @@ if [ -x "$root/versions/$version/bin/loopd" ]; then
   printf '这个版本已经安装，无需重新下载。\n'
 else
   printf '正在下载 Loop，首次安装需要几分钟……\n'
-  curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --proto '=https' --proto-redir '=https' "$gateway/api/daemon-releases/$file" -o "$tmp/package.tar.gz"
+  curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 "$gateway/api/daemon-releases/$file" -o "$tmp/package.tar.gz"
   if command -v sha256sum >/dev/null; then actual="$(sha256sum "$tmp/package.tar.gz")"; else actual="$(shasum -a 256 "$tmp/package.tar.gz")"; fi
   actual="${actual%% *}"
   [ "$actual" = "$sha" ] || { printf '安装包校验失败，请重新下载安装。\n' >&2; exit 1; }

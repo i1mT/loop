@@ -38,17 +38,18 @@ test("保留端口，不吞掉 host 里的冒号", async () => {
   assert.equal(requestOrigin(headers({ host: "127.0.0.1:3000" }), "127.0.0.1:3000"), "http://127.0.0.1:3000");
 });
 
-test("publicOrigin：IP 直连允许 HTTP，域名仍要求 HTTPS", async () => {
+test("publicOrigin：不限制协议，只拒绝有害形态", async () => {
   const { publicOrigin } = await import("./public-url.ts");
-  // IP + 端口直连没有证书，强制 HTTPS 会让后台通知整体不可用。
+  // 是否用 HTTPS 由部署者决定：IP、内网、域名都可能先跑 HTTP。
   assert.equal(publicOrigin("http://118.196.30.108:3220"), "http://118.196.30.108:3220");
   assert.equal(publicOrigin("http://127.0.0.1:3000"), "http://127.0.0.1:3000");
-  assert.equal(publicOrigin("http://192.168.1.10"), "http://192.168.1.10");
+  assert.equal(publicOrigin("http://loop.example.com"), "http://loop.example.com");
   assert.equal(publicOrigin("https://loop.example.com"), "https://loop.example.com");
-  // 域名走 HTTP 仍拒绝：对公网暴露的会话必须加密。
-  assert.throws(() => publicOrigin("http://loop.example.com"), /HTTPS/);
-  // 结构性错误一律拒绝，避免把通知发到异常地址。
-  assert.throws(() => publicOrigin("https://u:p@loop.example.com"), /HTTPS/);
-  assert.throws(() => publicOrigin("https://loop.example.com/path"), /HTTPS/);
-  assert.throws(() => publicOrigin("https://loop.example.com?a=1"), /HTTPS/);
+  // 允许挂在子路径下，按前缀部署时取 origin 即可。
+  assert.equal(publicOrigin("http://example.com/loop"), "http://example.com");
+  // 真正有害的形态仍然拒绝：非 http(s)、凭证、查询串、锚点。
+  assert.throws(() => publicOrigin("ftp://loop.example.com"));
+  assert.throws(() => publicOrigin("http://u:p@loop.example.com"));
+  assert.throws(() => publicOrigin("http://loop.example.com?a=1"));
+  assert.throws(() => publicOrigin("http://loop.example.com#x"));
 });
