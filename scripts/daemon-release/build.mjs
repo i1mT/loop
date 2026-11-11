@@ -11,15 +11,17 @@ const nodeVersion = '24.13.0';
 mkdirSync(out,{recursive:true});
 const manifest = {};
 function run(command,args,cwd=root) { execFileSync(command,args,{cwd,stdio:'inherit',env:{...process.env,COPYFILE_DISABLE:'1'}}); }
+// 符号链接可能指向目录：rmSync 对目录需要 recursive，否则抛 ERR_FS_EISDIR。
+const removeLink = (file) => rmSync(file,{recursive:true,force:true});
 function portableBins(dir) {
   for (const entry of readdirSync(dir,{withFileTypes:true})) {
     const file=join(dir,entry.name);
     if (entry.isSymbolicLink()) {
       // deploy 的虚拟仓库会保留未打包工作区的 hoisted 别名；这些不是运行依赖。
-      if (!existsSync(file)) {rmSync(file);continue;}
+      if (!existsSync(file)) {removeLink(file);continue;}
       const target=realpathSync(file);
       if (!target.startsWith(realpathSync(dir).split('/node_modules')[0]+'/')) {
-        if (file.includes('/.pnpm/node_modules/@loop/')) {rmSync(file);continue;}
+        if (file.includes('/.pnpm/node_modules/@loop/')) {removeLink(file);continue;}
         throw new Error('依赖链接指向安装目录外：'+file);
       }
     } else if (entry.isDirectory()) portableBins(file);
