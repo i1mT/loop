@@ -13,10 +13,11 @@ export interface RouteTab {
 }
 
 /** 二级页面的标签导航：每个标签是一个真正的子路由，可直接分享链接、浏览器前进后退可用 */
-export function RouteTabs({ tabs, label, className }: { tabs: RouteTab[]; label: string; className?: string }) {
+export function RouteTabs({ tabs, label, className, variant = "default" }: { tabs: RouteTab[]; label: string; className?: string; variant?: "default" | "workspace" }) {
   const path = usePathname();
+  const workspace = variant === "workspace";
   return (
-    <nav aria-label={label} className={clsx("flex gap-1 overflow-x-auto overflow-y-hidden border-b border-line", className ?? "-mt-2 mb-6")}>
+    <nav aria-label={label} className={clsx("flex gap-1 overflow-x-auto overflow-y-hidden border-b border-line", workspace && "gap-2 px-2.5 sm:gap-3 sm:px-4", className ?? (workspace ? undefined : "-mt-2 mb-6"))}>
       {tabs.map((t) => {
         const active = t.exact ? path === t.href : path === t.href || path.startsWith(`${t.href}/`);
         return (
@@ -25,8 +26,9 @@ export function RouteTabs({ tabs, label, className }: { tabs: RouteTab[]; label:
             href={t.href}
             aria-current={active ? "page" : undefined}
             className={clsx(
-              "-mb-px inline-flex h-10 items-center whitespace-nowrap border-b-2 px-3 text-[13px] font-medium transition-colors focus-visible:outline-offset-[-3px]",
-              active ? "border-ink text-ink" : "border-transparent text-ink-2 hover:text-ink",
+              "relative inline-flex shrink-0 items-center whitespace-nowrap text-[13px] font-medium transition-colors focus-visible:outline-offset-[-3px]",
+              workspace ? "h-11 px-1.5 after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:rounded-full" : "-mb-px h-10 border-b-2 px-3",
+              active ? (workspace ? "font-semibold text-ink after:bg-signal" : "border-ink text-ink") : "border-transparent text-ink-2 hover:text-ink",
             )}
           >
             {t.label}

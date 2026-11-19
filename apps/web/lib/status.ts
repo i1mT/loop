@@ -21,9 +21,9 @@ export const STAGE_INFO: Record<Stage, StageInfo> = {
   plan_reviewing: { label: "方案审核", tone: "review", group: "review", hint: "方案已产出，等你批准后才会开始实现" },
   plan_approved: { label: "方案已通过", tone: "live", group: "active", hint: "方案已通过，等待开始实现" },
   reviewing: { label: "待审核", tone: "review", group: "review", hint: "改动已提交并创建了 PR，等你审核" },
-  approved: { label: "已通过", tone: "live", group: "active", hint: "审核通过，等待发布" },
-  publishing: { label: "发布中", tone: "live", group: "active", hint: "PR 已合并，智能体正在原会话里执行发布" },
-  publish_review: { label: "待确认发布", tone: "review", group: "review", hint: "智能体没有明确说发布成败，等你确认结果" },
+  approved: { label: "等待发布", tone: "idle", group: "active", hint: "审核已通过，等待执行机器领取" },
+  publishing: { label: "发布中", tone: "live", group: "active", hint: "执行机器正在处理发布任务" },
+  publish_review: { label: "待确认发布", tone: "review", group: "review", hint: "请确认线上的发布结果" },
   published: { label: "已发布", tone: "ok", group: "done", hint: "PR 已合并，发布完成" },
   rejected: { label: "已驳回", tone: "idle", group: "closed", hint: "已被驳回，不会再处理" },
   failed: { label: "失败", tone: "bad", group: "closed", hint: "执行失败，详情见检查与活动" },
@@ -71,6 +71,57 @@ export const canOverrideOutcome = (s: Stage): boolean => ["approved", "publishin
 
 export function stageInfo(stage: string): StageInfo {
   return STAGE_INFO[stage as Stage] ?? { label: stage, tone: "idle", group: "active", hint: "" };
+}
+
+/** 旧版把等待超时记成失败，页面按结果待确认展示，避免把遗留会话状态当作实时运行。 */
+export function isLegacyPublishTimeout(task: { stage: string; merge_sha?: string | null; error: string | null }): boolean {
+  return task.stage === "failed" && !!task.merge_sha && hasLegacySessionTimeout(task.error);
+}
+
+export function hasLegacySessionTimeout(text?: string | null): boolean {
+  return /等待会话\s+\S+\s+状态超时（当前\s+[^）]*）/.test(text ?? "");
+}
+
+export function taskStageInfo(task: { stage: string; merge_sha?: string | null; error: string | null }): StageInfo {
+  if (isLegacyPublishTimeout(task)) return STAGE_INFO.publish_review;
+  if (task.stage === "failed" && task.merge_sha) {
+    return { ...STAGE_INFO.failed, label: "发布失败", hint: "代码已合并，本次发布未成功" };
+  }
+  return stageInfo(task.stage);
+}
+
+export interface TaskProgress {
+  info: StageInfo;
+  step: { index: number; closed: boolean };
+  activity: { label: string; spinning: boolean; agentRunning?: boolean; waiting?: boolean } | null;
+}
+
+export function taskProgress(
+  task: { stage: Stage; merge_sha?: string | null; merged_at?: number | null; error: string | null },
+  session: { state: string; updated_at?: number } | null,
+  leaseActive: boolean,
+): TaskProgress {
+  let info = taskStageInfo(task);
+  let step = pipelinePosition(task.stage);
+  let activity: TaskProgress["activity"] = null;
+  if (isLegacyPublishTimeout(task) || (task.stage === "failed" && task.merge_sha)) {
+    step = pipelinePosition("publishing");
+  }
+  if (task.stage === "publishing") {
+    const running = leaseActive && session?.state === "running" &&
+      (session.updated_at ?? 0) >= (task.merged_at ?? Number.POSITIVE_INFINITY);
+    const label = !leaseActive ? "等待机器接手发布" : running ? "智能体正在发布" : task.merge_sha ? "正在准备发布" : "正在同步并合并 PR";
+    info = { ...info, label: running ? "发布中" : label, tone: leaseActive ? "live" : "idle",
+      hint: running ? "可以在会话里查看发布进度" : task.merge_sha ? "代码已合并" : "合并后将开始发布" };
+    activity = { label, spinning: leaseActive, agentRunning: running };
+  } else if (task.stage === "running" || task.stage === "plan_approved") {
+    const label = !leaseActive ? "等待执行机器" : session?.state === "running" ? "智能体正在处理" : session?.state === "idle" ? "正在准备审核" : "正在准备会话";
+    activity = { label, spinning: leaseActive, agentRunning: leaseActive && session?.state === "running" };
+    info = { ...info, label, tone: leaseActive ? "live" : "idle", hint: "" };
+  } else if (task.stage === "needs_you") {
+    activity = { label: "等待你的回复", spinning: false, waiting: true };
+  }
+  return { info, step, activity };
 }
 
 export const GROUP_LABEL: Record<Group, string> = {

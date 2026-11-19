@@ -123,6 +123,10 @@ interface PublishLease {
   leaseId: string;
   taskId: string;
   done: boolean;
+  sessionId: string | null;
+  forwarded: number;
+  lost: boolean;
+  forwarding?: Promise<void>;
 }
 
 export class GatewayClient {
@@ -269,12 +273,12 @@ export async function serve(opts: ServeOptions): Promise<void> {
       }
     }
     for (const p of publishing.values()) {
-      if (!p.done)
-        await gw
-          .call("POST", `/api/daemon/leases/${p.leaseId}/heartbeat`, {
-            daemonId: opts.daemonId,
-          })
-          .catch(() => null);
+      if (p.done || p.lost) continue;
+      const reply = await gw.call("POST", `/api/daemon/leases/${p.leaseId}/heartbeat`, {
+        daemonId: opts.daemonId,
+      }).catch(() => null);
+      if (reply?.status === 409 && p.sessionId && !p.done) markLost(d, p.sessionId, p, log);
+      else if (reply?.status === 200) await forwardPublishEvents(ctx, p).catch(() => undefined);
     }
   };
   const beatTimer = setInterval(() => void beat(), 15_000);
@@ -422,7 +426,10 @@ export async function serve(opts: ServeOptions): Promise<void> {
       }
 
       // 3. 回传事件（幂等：网关按 seq 去重）
-      for (const [sid, a] of active) await forwardEvents(ctx, sid, a);
+      for (const [sid, a] of active) {
+        if (!isPublishing(publishing, a.taskId)) await forwardEvents(ctx, sid, a);
+      }
+      for (const lease of publishing.values()) await forwardPublishEvents(ctx, lease);
 
       // 4. 每轮结束后：补提交残留改动 → 提交变化时跑测试与预览 → 推送分支并建/更新 PR → 回传提交与 PR
       for (const [sid, a] of active) {
@@ -556,7 +563,8 @@ export async function serve(opts: ServeOptions): Promise<void> {
       }
 
       // 5b. 卡住检测：运行中长时间没有输出，升级为"需要你"（不静默等待）
-      for (const sid of active.keys()) {
+      for (const [sid, session] of active) {
+        if (isPublishing(publishing, session.taskId)) continue;
         if (d.escalateIfStalled(sid, STALL_MS))
           log(`会话 ${sid} 长时间没有输出，已请求人工决定`);
       }
@@ -659,7 +667,7 @@ async function retireTask(
 async function forwardEvents(
   ctx: Ctx,
   sid: string,
-  a: ActiveSession,
+  a: Pick<ActiveSession, "taskId" | "leaseId" | "forwarded" | "lost">,
 ): Promise<void> {
   if (a.lost) return;
   const pending = ctx.d.store.read(sid, a.forwarded);
@@ -1117,16 +1125,24 @@ function startPublish(ctx: Ctx, claim: Claim): void {
   const t = claim.task;
   // 同一任务已经在发布：网关会把仍持有的租约再次返回，这里不重复执行
   if (isPublishing(ctx.publishing, t.id)) return;
+  const work = t.sessionId ? ctx.active.get(t.sessionId) : undefined;
   const lease: PublishLease = {
     leaseId: claim.leaseId,
     taskId: t.id,
+    sessionId: t.sessionId,
+    forwarded: work?.forwarded ?? (t.sessionId ? ctx.d.store.lastSeq(t.sessionId) : -1),
+    lost: false,
     done: false,
   };
   ctx.publishing.set(claim.leaseId, lease);
   ctx.log(
     `开始发布任务 ${t.id}（批准的提交 ${t.approvedSha?.slice(0, 8) ?? "无"}）`,
   );
-  void runPublish(ctx, claim).then((outcome) => {
+  void runPublish(ctx, claim, lease).catch((error: unknown) => {
+    ctx.log(`发布流程中断：${String(error)}`);
+    return "failed" as const;
+  }).then((outcome) => {
+    if (work) work.forwarded = Math.max(work.forwarded, lease.forwarded);
     lease.done = true;
     ctx.publishing.delete(claim.leaseId);
     // 已发布或失败：这个任务的工作会话完成使命，停止回传与收件箱轮询。
@@ -1135,6 +1151,14 @@ function startPublish(ctx: Ctx, claim: Claim): void {
       for (const [sid, a] of ctx.active)
         if (a.taskId === t.id) ctx.active.delete(sid);
   });
+}
+
+function forwardPublishEvents(ctx: Ctx, lease: PublishLease): Promise<void> {
+  if (!lease.sessionId || lease.done || lease.lost) return Promise.resolve();
+  lease.forwarding ??= forwardEvents(ctx, lease.sessionId, lease).finally(() => {
+    lease.forwarding = undefined;
+  });
+  return lease.forwarding;
 }
 
 function isPublishing(
@@ -1183,6 +1207,7 @@ async function drainPublishMessages(ctx: Ctx, sid: string): Promise<string> {
 async function runPublish(
   ctx: Ctx,
   claim: Claim,
+  lease: PublishLease,
 ): Promise<"published" | "agent_done" | "failed" | "review_needed" | "sync_conflict"> {
   const { d } = ctx;
   const t = claim.task;
@@ -1249,6 +1274,7 @@ async function runPublish(
       mergeSha: merged.mergeSha,
     })
     .catch(() => ({ status: 0, data: {} }));
+  if (checkpoint.status === 409 || lease.lost) return "failed";
   if (checkpoint.status !== 200)
     ctx.log(`记录合并提交失败（${checkpoint.status}），继续发布`);
 
@@ -1283,23 +1309,28 @@ async function runPublish(
     } else {
       // 已经合并、发布轮却没有正常结束：不能断言失败，也不能自动重跑；交给人确认线上结果。
       result = "agent_done";
-      output = `PR 已合并（${merged.mergeSha.slice(0, 8)}），但发布会话停在“${r.state}”：${tail(r.reply)}\n\n请核对线上结果，确认发布成功；如果线上还是旧版本，点“重试发布”复用这个 PR 重新执行，不要重建 PR。`;
+      const summary = r.state === "silent"
+        ? `智能体超过 ${PUBLISH_TIMEOUT_MS / 60_000} 分钟没有更新，发布会话已结束。线上是否完成发布需要确认。`
+        : r.state === "needs_you"
+          ? "发布过程中智能体请求人工处理，会话已结束。请查看会话和线上结果。"
+          : "发布会话中断，线上是否完成发布需要确认。";
+      output = r.reply ? `${summary}\n\n${tail(r.reply, 1200)}` : summary;
     }
   } catch (e) {
     if (e instanceof PublishUnavailableError) {
       // 守护进程重启后会话会变成 crashed/needs_you；这是“发布被中断”，不是代码或部署失败。
       result = "agent_done";
-      output = `PR 已合并（${merged.mergeSha.slice(0, 8)}），但发布被中断：${e.message}\n\n请核对线上结果，确认发布成功；如果线上还是旧版本，点“重试发布”复用这个 PR 重新执行，不要重建 PR。`;
+      output = e.message;
     } else {
       result = "failed";
       output = `PR 已合并（${merged.mergeSha.slice(0, 8)}），但发布没有完成：${(e as Error).message.split("\n")[0]}`;
     }
   }
   // 发布会话的最后几条事件要先回传，再收尾（工作树保留，供人查看和确认）
-  const act = ctx.active.get(sid);
-  if (act && !act.lost)
-    await forwardEvents(ctx, sid, act).catch(() => undefined);
+  await lease.forwarding?.catch(() => undefined);
+  await forwardPublishEvents(ctx, lease).catch(() => undefined);
   await d.cancel(sid, { local: true }).catch(() => undefined);
+  if (lease.lost) return "failed";
   // 代码已经进了主分支：远端分支可以删（本地工作树保留，供人查看）
   await forge
     .deleteRemoteBranch({ repoDir, branch: wt.branch })
@@ -1339,7 +1370,7 @@ async function deliver(
 function markLost(
   d: LoopDaemon,
   sid: string,
-  a: ActiveSession,
+  a: Pick<ActiveSession, "taskId" | "lost">,
   log: (m: string) => void,
 ): void {
   a.lost = true;

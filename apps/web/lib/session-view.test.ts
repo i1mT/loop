@@ -1,6 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fold, type Ev } from "./session-fold.ts";
+import { taskProgress } from "./status.ts";
+
+test("发布展示区分等待、合并、正在发布、超时待确认和明确失败", () => {
+  const task = { stage: "publishing" as const, error: null, merge_sha: "abc1234", merged_at: 2 };
+  const session = { state: "running", updated_at: 3 };
+  assert.equal(taskProgress(task, session, false).activity?.spinning, false);
+  assert.equal(taskProgress({ ...task, merge_sha: null }, null, true).info.label, "正在同步并合并 PR");
+  assert.equal(taskProgress(task, { ...session, updated_at: 1 }, true).info.label, "正在准备发布");
+  assert.equal(taskProgress(task, session, true).activity?.label, "智能体正在发布");
+  for (const [error, label] of [["等待会话 test-123 状态超时（当前 running）", "待确认发布"], ["部署脚本退出失败", "发布失败"]]) {
+    const progress = taskProgress({ ...task, stage: "failed", error }, session, true);
+    assert.equal(progress.info.label, label);
+    assert.equal(progress.activity, null);
+    assert.deepEqual(progress.step, { index: 3, closed: false });
+  }
+});
 
 const ev = (seq: number, kind: string, payload: Record<string, unknown>): Ev => ({ seq, kind, at: seq, payload });
 

@@ -1,12 +1,12 @@
 import clsx from "clsx";
-import { Check } from "lucide-react";
-import { PIPELINE, pipelinePosition } from "@/lib/status.ts";
+import { Check, X } from "lucide-react";
+import { PIPELINE, type TaskProgress, type Tone } from "@/lib/status.ts";
 
-/** 排队 → 开发 → 审核 → 发布；终止态（失败、驳回、取消）整体置灰 */
-export function Pipeline({ stage, attention }: { stage: string; attention?: boolean }) {
-  const { index, closed } = pipelinePosition(stage);
+/** 排队 → 开发 → 审核 → 发布。发布失败停在发布节点。 */
+export function Pipeline({ position, tone }: { position: TaskProgress["step"]; tone: Tone }) {
+  const { index, closed } = position;
   return (
-    <ol className="flex items-center" aria-label="任务进度">
+    <ol className="flex max-w-[42rem] items-center" aria-label="任务进度">
       {PIPELINE.map((label, i) => {
         const done = !closed && i < index;
         const current = !closed && i === index;
@@ -15,17 +15,17 @@ export function Pipeline({ stage, attention }: { stage: string; attention?: bool
             <div className="flex items-center gap-2">
               <span
                 className={clsx(
-                  "grid size-6 shrink-0 place-items-center rounded-full border text-[11px] font-medium",
-                  done && "border-ink bg-ink text-card",
-                  current && (attention ? "border-ink bg-card text-ink" : "border-signal bg-signal text-white"),
-                  !done && !current && "border-line-strong bg-card text-ink-3",
+                  "grid size-5 shrink-0 place-items-center rounded-full border",
+                  done && "border-line bg-card text-ink-2",
+                  current && (tone === "bad" ? "border-bad/30 bg-bad-soft text-bad" : "border-signal/30 bg-signal-soft text-signal"),
+                  !done && !current && "border-line-strong text-ink-3",
                 )}
               >
-                {done ? <Check className="size-3.5" aria-hidden /> : i + 1}
+                {done ? <Check className="size-3" aria-hidden /> : current && tone === "bad" ? <X className="size-3" aria-hidden /> : <span className={clsx("size-1.5 rounded-full", current ? "bg-current" : "bg-line-strong")} aria-hidden />}
               </span>
-              <span className={clsx("text-[13px]", current ? "font-semibold text-ink" : done ? "text-ink" : "text-ink-3")}>{label}</span>
+              <span className={clsx("whitespace-nowrap text-[13px]", current ? "font-semibold text-ink" : done ? "text-ink-2" : "text-ink-3")}>{label}</span>
             </div>
-            {i < PIPELINE.length - 1 && <span className={clsx("mx-3 h-px min-w-4 flex-1", done ? "bg-ink" : "bg-line-strong")} aria-hidden />}
+            {i < PIPELINE.length - 1 && <span className={clsx("mx-1.5 h-px min-w-1 flex-1 bg-line sm:mx-3")} aria-hidden />}
           </li>
         );
       })}

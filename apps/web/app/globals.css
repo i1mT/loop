@@ -111,3 +111,31 @@ select:focus-visible,
 .md table { border-collapse: collapse; }
 .md th, .md td { border: 1px solid var(--color-line); padding: 4px 8px; }
 .md blockquote { border-left: 3px solid var(--color-line-strong); padding-left: 10px; color: var(--color-ink-2); }
+
+/* 任务详情独占可用高度，顶部按内容自然排版，其余空间留给会话。 */
+.task-shell { display: flex; flex-direction: column; }
+.task-shell-main { display: flex; flex: 1; flex-direction: column; }
+.task-workspace { grid-template-areas: "status" "main" "details"; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(min-content, 1fr) auto; flex: 1; }
+.task-workspace-main { grid-area: main; }
+.task-workspace-status { grid-area: status; }
+.task-workspace-details { grid-area: details; align-self: start; }
+.task-conversation-history { max-height: clamp(10rem, 36dvh, 20rem); }
+
+@media (min-width: 54rem) {
+  .task-shell { height: 100dvh; }
+  .task-shell-main { min-height: 0; overflow-y: auto; padding-bottom: 1.25rem; }
+  .task-workspace {
+    min-height: 18rem;
+    grid-template-areas: "main status" "main details";
+    grid-template-columns: minmax(0, 1fr) clamp(17rem, 27vw, 22rem);
+    grid-template-rows: fit-content(65%) minmax(0, 1fr);
+  }
+  .task-workspace-main, .task-workspace-status, .task-workspace-details { min-height: 0; }
+  .task-workspace-status, .task-workspace-details { overflow-y: auto; overscroll-behavior-y: contain; }
+  .task-workspace-details { max-height: 100%; }
+  .task-conversation-history { max-height: none; overscroll-behavior-y: contain; }
+}
+
+@media (min-width: 64rem) {
+  .task-shell { display: grid; grid-template-rows: minmax(0, 1fr); }
+}

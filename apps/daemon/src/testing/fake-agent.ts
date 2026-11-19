@@ -84,6 +84,15 @@ async function runPrompt(sessionId: string, text: string, client: Client): Promi
     return { stopReason: "end_turn" };
   }
 
+  if (text.includes("publish-progress")) {
+    for (let i = 0; i < 8; i++) {
+      await say(client, sessionId, `发布步骤 ${i + 1}\n`);
+      await sleep(50);
+    }
+    await say(client, sessionId, "发布结果：成功");
+    return { stopReason: "end_turn" };
+  }
+
   if (text.includes("stall")) {
     // 不输出任何内容，直到被取消（模拟卡住）
     for (let i = 0; i < 400; i++) {

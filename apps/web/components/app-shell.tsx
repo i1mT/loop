@@ -136,10 +136,12 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
-  const immersive = usePathname() === "/tasks/new";
+  const pathname = usePathname();
+  const immersive = pathname === "/tasks/new";
+  const taskDetail = !immersive && pathname.startsWith("/tasks/");
   return (
     <ToastProvider>
-      <div className="min-h-dvh lg:grid lg:grid-cols-[232px_1fr]">
+      <div className={clsx("min-h-dvh lg:grid lg:grid-cols-[232px_1fr]", taskDetail && "task-shell")}>
         <aside className="sticky top-0 hidden h-dvh border-r border-line bg-card lg:block">
           <Sidebar />
         </aside>
@@ -165,7 +167,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
 
         {/* 沉浸式页面（写任务）占满内容区，不加边距和最大宽度 */}
-        <main className={immersive ? "min-w-0" : "mx-auto w-full min-w-0 max-w-[1180px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8"}>{children}</main>
+        <main className={clsx(immersive ? "min-w-0" : "mx-auto w-full min-w-0 max-w-[1180px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8", taskDetail && "task-shell-main")}>{children}</main>
       </div>
     </ToastProvider>
   );

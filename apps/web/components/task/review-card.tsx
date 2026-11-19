@@ -1,5 +1,5 @@
 "use client";
-import { AlertTriangle, CheckCircle2, ExternalLink, GitMerge, GitPullRequest, Hourglass, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ExternalLink, GitMerge, GitPullRequest, Hourglass, Radio, XCircle } from "lucide-react";
 import { useState } from "react";
 import { Button, LinkButton } from "@/components/ui/button.tsx";
 import { Dialog } from "@/components/ui/dialog.tsx";
@@ -8,11 +8,11 @@ import { Card } from "@/components/ui/page-header.tsx";
 import { useToast } from "@/components/ui/toast.tsx";
 import { ApiError, apiPost, mutate, useApi } from "@/lib/client-api.ts";
 import { shortSha } from "@/lib/format.ts";
-import { canRestore, canRetryPublish, stageInfo } from "@/lib/status.ts";
+import { canRestore, canRetryPublish, hasLegacySessionTimeout, isLegacyPublishTimeout, type TaskProgress } from "@/lib/status.ts";
 import type { Item } from "@/lib/session-fold.ts";
 import type { TaskItem } from "@/lib/types.ts";
 
-export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: Extract<Item, { type: "check" }>[]; reload: () => void }) {
+export function ReviewCard({ task, progress, checks, reload }: { task: TaskItem; progress: TaskProgress; checks: Extract<Item, { type: "check" }>[]; reload: () => void }) {
   const toast = useToast();
   const technicalPlan = useApi<{ plan: { round: number; revision: number } | null }>(task.stage === "plan_reviewing" ? `/api/tasks/${task.id}/technical-plan` : null);
   const [busy, setBusy] = useState<"approve" | "reject" | "republish" | "restore" | "retry-publish" | null>(null);
@@ -112,7 +112,12 @@ export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: E
     }
   }
 
-  const info = stageInfo(task.stage);
+  const { info } = progress;
+  const legacyTimeout = isLegacyPublishTimeout(task);
+  const resultNeedsConfirmation = task.stage === "publish_review" || legacyTimeout;
+  const summary = hasLegacySessionTimeout(task.error)
+    ? "这次发布超时，尚未收到结果。"
+    : task.error;
   const canRetryPublishNow = canRetryPublish(task.stage, !!task.pr_url, !!task.approved_sha, !!task.merge_sha);
   const Check = ({ label, ok }: { label: string; ok: boolean | undefined }) => (
     <li className="flex items-center gap-2 text-[13px]">
@@ -123,7 +128,7 @@ export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: E
   );
 
   return (
-    <Card className="p-4">
+    <Card className="rounded-[14px] p-4 sm:p-5">
       {task.stage === "plan_reviewing" && (
         <div className="grid gap-3">
           <h2 className="text-[15px] font-semibold">方案审核</h2>
@@ -191,28 +196,26 @@ export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: E
         </div>
       )}
 
-      {task.stage === "publish_review" && (
+      {resultNeedsConfirmation && (
         <div className="grid gap-3">
-          <h2 className="text-[15px] font-semibold">确认发布结果</h2>
-          <p className="text-[13px] text-ink-2">PR 已合并，智能体执行了发布，但没有明确给出“发布结果：成功/失败”。请看它的总结并核对线上结果后确认。</p>
-          {task.error && <p className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-control bg-canvas px-3 py-2 text-[13px] text-ink-2">{task.error}</p>}
-          {canRetryPublishNow && (
-            <div className="grid gap-2 rounded-control bg-warn-soft px-3 py-2.5 text-[13px] text-warn">
-              <p>如果核对后线上仍是旧版本，可以复用已经合并的 PR 重新执行发布，不需要重建分支或 PR。</p>
-              <div>
-                <Button size="sm" loading={busy === "retry-publish"} disabled={!!busy} onClick={retryPublish}>
-                  重新执行发布（复用当前 PR）
-                </Button>
-              </div>
+          <div className="flex items-start gap-3">
+            <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-warn-soft text-warn"><AlertTriangle className="size-4" aria-hidden /></span>
+            <div className="min-w-0">
+              <h2 className="text-[15px] font-semibold leading-5">确认发布结果</h2>
+              <p className="mt-1 text-[13px] leading-5 text-ink-2">{task.merge_sha ? "代码已合并。" : ""}请先查看线上版本。</p>
             </div>
-          )}
-          <Button variant="primary" loading={busy === "approve"} disabled={!!busy} onClick={() => confirmPublish(true)}>
-            <CheckCircle2 className="size-4" aria-hidden />
-            发布成功
-          </Button>
-          <Button variant="danger" loading={busy === "reject"} disabled={!!busy} onClick={() => confirmPublish(false)}>
-            发布失败
-          </Button>
+          </div>
+          {summary && <div className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-canvas/70 px-3 py-2.5 text-[13px] leading-5 text-ink-2">{summary}</div>}
+
+          <div className="flex flex-wrap items-center gap-2 sm:grid">
+            <Button variant="primary" loading={busy === "approve"} disabled={!!busy} onClick={() => legacyTimeout ? void override("published") : void confirmPublish(true)}>
+              <CheckCircle2 className="size-4" aria-hidden /> 确认发布成功
+            </Button>
+            {(canRetryPublishNow || !legacyTimeout) && <div className="flex flex-wrap items-center justify-between gap-1 sm:border-t sm:border-line sm:pt-2">
+              {canRetryPublishNow && <Button variant="ghost" size="sm" loading={busy === "retry-publish"} disabled={!!busy} onClick={retryPublish} title="复用当前 PR">重试发布</Button>}
+              {!legacyTimeout && <Button variant="ghost" size="sm" className="text-bad hover:text-bad" loading={busy === "reject"} disabled={!!busy} onClick={() => confirmPublish(false)}>确认发布失败</Button>}
+            </div>}
+          </div>
         </div>
       )}
 
@@ -224,6 +227,7 @@ export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: E
           </h2>
           <p className="text-[13px] text-ink-2">智能体在等你的决定。请在会话里点选项，或直接回复。</p>
           {task.error && <p className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-control bg-canvas px-3 py-2 text-[13px] text-ink-2">{task.error}</p>}
+          <LinkButton size="sm" variant="primary" href={`/tasks/${task.id}#task-reply`}>前往会话</LinkButton>
         </div>
       )}
 
@@ -243,13 +247,13 @@ export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: E
         </div>
       )}
 
-      {task.stage === "failed" && (
+      {task.stage === "failed" && !legacyTimeout && (
         <div className="grid gap-2">
           <h2 className="flex items-center gap-2 text-[15px] font-semibold text-bad">
             <XCircle className="size-4" aria-hidden />
-            执行失败
+            {info.label === "失败" ? "执行失败" : info.label}
           </h2>
-          <p className="break-words text-[13px] text-ink-2">{task.error ?? "没有记录原因，请查看“检查”和“活动”。"}</p>
+          <p className="max-h-60 overflow-auto whitespace-pre-wrap break-words text-[13px] text-ink-2">{summary ?? "请查看检查和活动里的记录。"}</p>
           {canRetryPublishNow ? (
             <div className="grid gap-2 rounded-control bg-warn-soft px-3 py-2.5 text-[13px] text-warn">
               <p>
@@ -259,7 +263,7 @@ export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: E
               </p>
               <div>
                 <Button variant="primary" loading={busy === "retry-publish"} disabled={!!busy} onClick={retryPublish}>
-                  重试发布（复用当前 PR）
+                  重试发布
                 </Button>
               </div>
             </div>
@@ -276,19 +280,17 @@ export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: E
       )}
 
       {["received", "batched", "held", "queued", "running", "plan_approved", "approved", "publishing", "rejected", "cancelled"].includes(task.stage) && (
-        <div className="grid gap-1.5">
-          <h2 className="text-[15px] font-semibold">{info.label}</h2>
-          <p className="text-[13px] text-ink-2">{info.hint}</p>
+        <div className="grid gap-3">
+          <div className="flex items-start gap-3">
+            <span className={`grid size-8 shrink-0 place-items-center rounded-lg ${progress.activity?.spinning ? "bg-signal-soft text-signal" : "bg-sunken text-ink-2"}`}>
+              {progress.activity?.spinning ? <Radio className="size-4" aria-hidden /> : <Hourglass className="size-4" aria-hidden />}
+            </span>
+            <div className="min-w-0">
+              <h2 className="text-[15px] font-semibold leading-5">{info.label}</h2>
+              <p className="mt-1 text-[13px] leading-5 text-ink-2">{task.stage === "publishing" ? (task.merge_sha ? "代码已合并。发布完成后会在这里显示结果。" : "PR 合并后会开始发布。") : info.hint || "可在会话中查看进度或补充要求。"}</p>
+            </div>
+          </div>
           {["rejected", "cancelled"].includes(task.stage) && <RestoreHint busy={busy === "restore"} disabled={!!busy} onRestore={restore} />}
-          {["approved", "publishing"].includes(task.stage) && (
-            <>
-              <p className="text-xs text-ink-3">长时间没有进展，或已经确认发布完成，可以手动改结果。</p>
-              <Button onClick={() => setMarking("published")}>标记为已发布</Button>
-              <Button variant="danger" onClick={() => setMarking("failed")}>
-                标记为失败
-              </Button>
-            </>
-          )}
         </div>
       )}
 

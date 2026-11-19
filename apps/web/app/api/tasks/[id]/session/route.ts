@@ -19,10 +19,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const before = beforeRaw === null ? null : Number(beforeRaw);
   const limit = Math.min(Math.max(Number(search.get("limit") ?? 120) || 120, 1), 300);
   const db = await getDb();
-  const session = await db
-    .prepare(`SELECT id, agent, state, created_at, updated_at FROM sessions WHERE task_id=? ORDER BY created_at DESC LIMIT 1`)
-    .bind(id)
-    .first<{ id: string; agent: string; state: string; created_at: number; updated_at: number }>();
+  const [session, lease] = await Promise.all([
+    db.prepare(`SELECT id, agent, state, created_at, updated_at FROM sessions WHERE task_id=? ORDER BY created_at DESC LIMIT 1`)
+      .bind(id).first<{ id: string; agent: string; state: string; created_at: number; updated_at: number }>(),
+    db.prepare(`SELECT 1 FROM leases WHERE task_id=? AND daemon_id=? AND released=0 AND expires_at>? LIMIT 1`)
+      .bind(id, task.machine_id, Date.now()).first(),
+  ]);
+  const leaseActive = !!lease;
   const notifications = (await db.prepare(`SELECT id, kind, body, created_at AS "createdAt" FROM notifications WHERE task_id=? ORDER BY id DESC LIMIT 30`).bind(id).all()).results.reverse();
   const review = {
     releaseReview: !!task.release_review,
@@ -32,7 +35,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     error: task.error,
   };
   const pending = await pendingConversation(id, session?.id ?? null);
-  if (!session) return json({ ok: true, task, project, stage: task.stage, session: null, events: [], pending, review, notifications, hasMore: false });
+  if (!session) return json({ ok: true, task, project, stage: task.stage, leaseActive, session: null, events: [], pending, review, notifications, hasMore: false });
   // 增量轮询：只取游标之后的少量事件。
   // 首次进入或向上翻页：从最新（或 before 之前）倒序取一页，再按 seq 升序返回。
   let events: { seq: number; kind: string; payload: unknown; at: number }[];
@@ -63,5 +66,5 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         .first());
     }
   }
-  return json({ ok: true, task, project, stage: task.stage, session, events, pending, review, notifications, hasMore });
+  return json({ ok: true, task, project, stage: task.stage, leaseActive, session, events, pending, review, notifications, hasMore });
 }

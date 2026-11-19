@@ -20,7 +20,8 @@ export interface SessionResponse {
   task: import("./types.ts").TaskItem;
   project: import("./types.ts").ProjectItem | null;
   stage: string;
-  session: { id: string; agent: string; state: string } | null;
+  session: { id: string; agent: string; state: string; updated_at?: number } | null;
+  leaseActive?: boolean;
   events: Ev[];
   pending: Pending[];
   review: { releaseReview: boolean; planReview: boolean; headSha: string | null; approvedSha: string | null; error: string | null } | null;

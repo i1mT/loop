@@ -11,7 +11,7 @@ import { EmptyState, ErrorState, RowsSkeleton } from "@/components/ui/states.tsx
 import { useToast } from "@/components/ui/toast.tsx";
 import { ApiError, apiPost, mutate, useApi } from "@/lib/client-api.ts";
 import { timeAgo } from "@/lib/format.ts";
-import { canArchive, GROUP_LABEL, GROUP_ORDER, stageInfo, type Group } from "@/lib/status.ts";
+import { canArchive, GROUP_LABEL, GROUP_ORDER, taskStageInfo, type Group } from "@/lib/status.ts";
 import type { GlobalPool, TaskItem } from "@/lib/types.ts";
 import { PoolPanel } from "@/components/project/pool-panel.tsx";
 import { AgentName } from "@/components/agent/agent-icon.tsx";
@@ -35,11 +35,14 @@ export default function TasksPage() {
   const projects = useMemo(() => [...new Map(tasks.map((t) => [t.project_id, t.project_name])).entries()], [tasks]);
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: tasks.length };
-    for (const t of tasks) c[stageInfo(t.stage).group] = (c[stageInfo(t.stage).group] ?? 0) + 1;
+    for (const task of tasks) {
+      const { group } = taskStageInfo(task);
+      c[group] = (c[group] ?? 0) + 1;
+    }
     return c;
   }, [tasks]);
   const shown = tasks.filter((t) => {
-    if (filter !== "all" && filter !== "pool" && stageInfo(t.stage).group !== filter) return false;
+    if (filter !== "all" && filter !== "pool" && taskStageInfo(t).group !== filter) return false;
     if (project && t.project_id !== project) return false;
     if (query && !`${t.title} ${t.project_name} ${t.branch ?? ""}`.toLowerCase().includes(query.toLowerCase())) return false;
     return true;
@@ -190,9 +193,9 @@ export default function TasksPage() {
           <ul className="divide-y divide-line">
             {shown
               .slice()
-              .sort((a, b) => GROUP_ORDER.indexOf(stageInfo(a.stage).group) - GROUP_ORDER.indexOf(stageInfo(b.stage).group) || b.updated_at - a.updated_at)
+              .sort((a, b) => GROUP_ORDER.indexOf(taskStageInfo(a).group) - GROUP_ORDER.indexOf(taskStageInfo(b).group) || b.updated_at - a.updated_at)
               .map((t) => {
-                const info = stageInfo(t.stage);
+                const info = taskStageInfo(t);
                 return (
                   <li key={t.id} className="flex items-center hover:bg-canvas/60">
                     <label className="flex w-10 shrink-0 cursor-pointer items-center justify-center self-stretch">

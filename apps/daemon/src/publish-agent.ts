@@ -1,6 +1,7 @@
 // 发布：PR 合并后，把任务的工作树同步到合并后的主分支，再对原来的会话发一条“开始发布”的消息，
 // 由同一个智能体（它已经了解这次改动）按项目 AGENTS.md 自己发布。成败不由程序判断，交给人确认。
-import type { LoopDaemon } from "./daemon.ts";
+import { SessionWaitTimeout, type LoopDaemon } from "./daemon.ts";
+import type { SessionState } from "./store.ts";
 import { git, type Worktree } from "./worktree.ts";
 
 /** 工作树切到合并后的主分支：任务分支已经合并，直接对齐到 origin/<主分支>（需要先 fetch）。 */
@@ -33,14 +34,14 @@ export interface PublishRun {
   /** 智能体这一轮的完整回复 */
   reply: string;
   /** 这一轮结束时会话的状态：idle 表示正常结束 */
-  state: string;
+  state: SessionState | "silent";
 }
 
 /** 会话没有停在空闲状态（常见于守护进程重启把会话标成 crashed/needs_you）：发布无法开始。 */
 export class PublishUnavailableError extends Error {
   readonly state: string;
   constructor(state: string) {
-    super(`会话当前状态是 ${state}，不能开始发布`);
+    super("原会话暂时无法开始发布。请查看会话，再确认是否重试。");
     this.name = "PublishUnavailableError";
     this.state = state;
   }
@@ -59,7 +60,11 @@ export async function runPublishInSession(
 ): Promise<PublishRun> {
   const wasLive = d.isLive(sid);
   if (!wasLive) await d.resume(sid);
-  let before = await d.waitFor(sid, ["idle", "needs_you", "failed", "cancelled", "crashed", "ended"], 30_000);
+  const settled: SessionState[] = ["idle", "needs_you", "failed", "cancelled", "crashed", "ended"];
+  let before = await d.waitFor(sid, settled, 30_000).catch((error: unknown) => {
+    if (error instanceof SessionWaitTimeout) throw new PublishUnavailableError("busy");
+    throw error;
+  });
   if (
     options.resetWaiting &&
     !wasLive &&
@@ -71,14 +76,19 @@ export async function runPublishInSession(
   if (before.state !== "idle") throw new PublishUnavailableError(before.state);
   const mark = d.store.lastSeq(sid);
   d.reply(sid, prompt);
-  const end = await d.waitFor(sid, ["idle", "needs_you", "failed", "cancelled", "crashed", "ended"], timeoutMs);
+  const state = await d.waitFor(sid, settled, timeoutMs, { whileOutputContinues: true })
+    .then((end) => end.state)
+    .catch((error: unknown) => {
+      if (error instanceof SessionWaitTimeout) return "silent" as const;
+      throw error;
+    });
   const reply = d.store
     .read(sid, mark)
     .filter((e) => e.kind === "message" && (e.payload as { role?: string }).role === "agent")
     .map((e) => String((e.payload as { text?: string }).text ?? ""))
     .join("")
     .trim();
-  return { reply, state: end.state };
+  return { reply, state };
 }
 
 export interface Verdict {

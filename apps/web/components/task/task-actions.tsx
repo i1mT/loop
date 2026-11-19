@@ -1,6 +1,6 @@
 "use client";
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Archive, ArchiveRestore, MoreHorizontal, Pencil, RotateCcw } from "lucide-react";
+import { Archive, ArchiveRestore, MoreHorizontal, Pencil, RotateCcw, XCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button.tsx";
@@ -13,7 +13,7 @@ import type { TaskItem } from "@/lib/types.ts";
 
 
 /** 任务的编辑、归档/恢复、重新开始。只出现当前阶段允许的操作。 */
-export function TaskActions({ task, reload }: { task: TaskItem; reload: () => void }) {
+export function TaskActions({ task, reload, onCancel }: { task: TaskItem; reload: () => void; onCancel?: () => void }) {
   const toast = useToast();
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -38,7 +38,7 @@ export function TaskActions({ task, reload }: { task: TaskItem; reload: () => vo
     <>
       <Menu.Root>
         <Menu.Trigger asChild>
-          <Button aria-label="更多操作" title="编辑、归档等" className="px-2">
+          <Button aria-label="更多操作" title="任务操作" className="size-9 shrink-0 px-0">
             <MoreHorizontal className="size-4" aria-hidden />
           </Button>
         </Menu.Trigger>
@@ -74,6 +74,10 @@ export function TaskActions({ task, reload }: { task: TaskItem; reload: () => vo
                 重新开始（新建副本）
               </Item>
             )}
+            {onCancel && !archived && <>
+              <Menu.Separator className="my-1 h-px bg-line" />
+              <Item icon={<XCircle className="size-4" aria-hidden />} onSelect={onCancel} danger>取消任务</Item>
+            </>}
             {(archived || canArchive(task.stage)) && (
               <Item
                 icon={archived ? <ArchiveRestore className="size-4" aria-hidden /> : <Archive className="size-4" aria-hidden />}
@@ -128,9 +132,9 @@ export function TaskActions({ task, reload }: { task: TaskItem; reload: () => vo
   );
 }
 
-function Item({ icon, children, onSelect }: { icon: ReactNode; children: ReactNode; onSelect: () => void }) {
+function Item({ icon, children, onSelect, danger }: { icon: ReactNode; children: ReactNode; onSelect: () => void; danger?: boolean }) {
   return (
-    <Menu.Item onSelect={onSelect} className="flex cursor-pointer items-center gap-2 rounded-control px-2.5 py-2 text-ink outline-none data-[highlighted]:bg-sunken">
+    <Menu.Item onSelect={onSelect} className={`flex cursor-pointer items-center gap-2 rounded-control px-2.5 py-2 outline-none data-[highlighted]:bg-sunken ${danger ? "text-bad" : "text-ink"}`}>
       {icon}
       {children}
     </Menu.Item>

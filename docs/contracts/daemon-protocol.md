@@ -45,9 +45,11 @@
 待审核且任务不需要发布审核（`releaseReview=false`）时，报告后直接自动批准。
 
 ### `POST /api/daemon/leases/:leaseId/complete`
-发布任务的结果：`{ daemonId, outcome: "published" | "failed" | "review_needed", output }`。
-- `published`：任务结束，租约释放
-- `failed`：任务结束，租约释放，记录输出尾部
+发布任务的结果包括成功、失败、待确认、重新审核和冲突。发布过程中仍通过原会话上报事件，包含重试发布。
+
+- `published` 表示已确认发布成功，任务结束并释放租约。
+- `failed` 表示合并或发布明确失败，任务结束并释放租约。
+- `agent_done` 表示发布结果待确认。智能体持续输出时继续等待，长时间没有更新或会话中断时结束当前会话并请用户查看线上结果。
 - `review_needed`：发布前发现提交已变（主分支同步后），回到待审核；**租约保留**（工作区仍属于本守护进程）
 
 ### `POST /api/daemon/leases/:leaseId/fail`

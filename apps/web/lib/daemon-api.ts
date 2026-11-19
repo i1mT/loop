@@ -24,6 +24,7 @@ import {
   canRepublish,
   canRestore,
   canRetryPublish,
+  hasLegacySessionTimeout,
   STAGE_LABEL,
 } from "./status.ts";
 
@@ -690,6 +691,10 @@ export async function completePublish(
   const task = await getTask(lease.task_id);
   if (!task || task.stage !== "publishing")
     return { ok: false, status: 409, error: "任务不在发布中" };
+  if (outcome === "failed" && task.merge_sha && hasLegacySessionTimeout(output)) {
+    outcome = "agent_done";
+    output = "等待智能体返回发布结果时超时。";
+  }
   // 冲突必须交回原会话处理。阶段与收件箱同时持久保存，重启之后仍会继续投递。
   // 条件更新保证重复回传不会重复投递；旧提交不能再被批准。
   if (outcome === "sync_conflict") {
@@ -727,7 +732,7 @@ export async function completePublish(
       )
       .bind(output.slice(-2000), now(), task.id)
       .run();
-    await notify(task.id, "publish_review", "智能体已结束发布，请确认发布结果");
+    await notify(task.id, "publish_review", "发布结果待确认，请查看线上版本");
   } else if (outcome === "failed") {
     await db
       .prepare(

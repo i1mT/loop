@@ -71,6 +71,17 @@ test("发布中可请求退回审核，发布结束后保留已合并的 PR", { 
   assert.equal(next.task.job, "work");
 });
 
+test("旧守护进程报告发布会话等待超时，任务进入待确认", { skip: !dbUrl }, async () => {
+  const { db, machine, task } = await fixture();
+  const work = (await claim(machine))!;
+  await db.prepare(`UPDATE tasks SET stage='publishing',merge_sha='1234567' WHERE id=?`).bind(task.id).run();
+  const result = await completePublish(work.leaseId, machine, "failed", "PR 已合并，但发布没有完成：等待会话 fixture 状态超时（当前 running）");
+  assert.equal(result.ok, true);
+  const saved = (await getTask(task.id))!;
+  assert.equal(saved.stage, "publish_review");
+  assert.equal(saved.error, "等待智能体返回发布结果时超时。");
+});
+
 test("发布进行时收下修改意见，交给发布结束后的开发轮次", { skip: !dbUrl }, async () => {
   const { db, machine, task, sid } = await fixture();
   const work = (await claim(machine))!;

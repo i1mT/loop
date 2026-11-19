@@ -31,6 +31,13 @@ const TERMINAL_OR_WAITING: SessionState[] = [
 const CANCEL_GRACE_MS = 2000;
 const EXIT_SETTLE_MS = 300;
 
+export class SessionWaitTimeout extends Error {
+  constructor(id: string, state: SessionState | undefined) {
+    super(`等待会话 ${id} 状态超时（当前 ${state}）`);
+    this.name = "SessionWaitTimeout";
+  }
+}
+
 interface Live {
   conn: AgentConn;
   wt: Worktree;
@@ -540,6 +547,7 @@ export class LoopDaemon extends EventEmitter {
     id: string,
     states: SessionState[] = TERMINAL_OR_WAITING,
     timeoutMs = 30000,
+    options: { whileOutputContinues?: boolean } = {},
   ): Promise<SessionMeta> {
     return new Promise((resolve, reject) => {
       const check = () => {
@@ -555,14 +563,21 @@ export class LoopDaemon extends EventEmitter {
       const onState = (sid: string) => {
         if (sid === id) check();
       };
-      const timer = setTimeout(() => {
+      const beganWaitingAt = Date.now();
+      let timer: ReturnType<typeof setTimeout>;
+      const onTimeout = () => {
+        if (options.whileOutputContinues) {
+          const latest = Math.max(beganWaitingAt, this.store.lastOutputAt(id));
+          const remaining = latest + timeoutMs - Date.now();
+          if (remaining > 0) {
+            timer = setTimeout(onTimeout, remaining);
+            return;
+          }
+        }
         this.off("state", onState);
-        reject(
-          new Error(
-            `等待会话 ${id} 状态超时（当前 ${this.store.getMeta(id)?.state}）`,
-          ),
-        );
-      }, timeoutMs);
+        reject(new SessionWaitTimeout(id, this.store.getMeta(id)?.state));
+      };
+      timer = setTimeout(onTimeout, timeoutMs);
       this.on("state", onState);
       check();
     });

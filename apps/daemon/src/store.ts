@@ -63,6 +63,7 @@ export interface SessionMeta {
 export class SessionStore {
   private readonly dir: string;
   private readonly lastSeqCache = new Map<string, number>();
+  private readonly lastEventAt = new Map<string, number>();
 
   constructor(dataDir: string) {
     this.dir = join(dataDir, "sessions");
@@ -136,6 +137,10 @@ export class SessionStore {
     return max;
   }
 
+  lastOutputAt(id: string): number {
+    return this.lastEventAt.get(id) ?? 0;
+  }
+
   /** 追加一条事件，序号自动分配。非法事件抛错。 */
   append(id: string, body: { kind: string; payload: unknown }): SessionEvent {
     const seq = this.lastSeq(id) + 1;
@@ -149,6 +154,7 @@ export class SessionStore {
     if (!parsed.ok) throw new Error(`非法事件 ${body.kind}：${parsed.error}`);
     appendFileSync(this.eventsPath(id), `${JSON.stringify(parsed.event)}\n`);
     this.lastSeqCache.set(id, seq);
+    this.lastEventAt.set(id, parsed.event.at);
     return parsed.event;
   }
 

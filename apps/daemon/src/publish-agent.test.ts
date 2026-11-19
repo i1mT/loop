@@ -96,6 +96,19 @@ test("人重试已合并的发布：重启留下的 crashed/needs_you 不再拦�
   assert.ok(r.reply.length > 0);
 });
 
+test("持续输出的发布可以超过单次等待时长，长时间没有输出时返回待确认的状态", async () => {
+  const d = new LoopDaemon({ dataDir: tempDir("loopd-pub-progress-"), specs: { fake: FAKE_SPEC } });
+  daemons.push(d);
+  const id = await d.start({ taskId: "publish-progress", repo: makeRepo(), agent: "fake", prompt: "你好" });
+  await d.waitFor(id);
+  const active = await runPublishInSession(d, id, "publish-progress", 200);
+  assert.equal(active.state, "idle");
+  assert.match(active.reply, /发布步骤 8[\s\S]*发布结果：成功/);
+  const quiet = await runPublishInSession(d, id, "stall", 100);
+  assert.equal(quiet.state, "silent");
+  await d.cancel(id, { local: true });
+});
+
 test("发布结论：取最后一条“发布结果：成功/失败”，没有就是 unclear（不猜）", async () => {
   const { parseVerdict } = await import("./publish-agent.ts");
   assert.deepEqual(parseVerdict("已部署到 https://x\n发布结果：成功"), { verdict: "success", summary: "已部署到 https://x" });
