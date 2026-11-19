@@ -27,3 +27,4 @@ AGENTS.local.md
 # 一次性工具链缓存（corepack / npm / pnpm store），不应提交。
 .tmp-tool/
 .pnpm-store/
+.alma-snapshots

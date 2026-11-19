@@ -7,35 +7,54 @@ import { enqueue } from "@/lib/feishu/jobs/store.ts";
 import { fail, json } from "@/lib/http.ts";
 import type { FeishuSecrets } from "@/lib/feishu/bindings.ts";
 import type { MessageEvent } from "@/lib/feishu/jobs/messages.ts";
+import { withCallbackDiagnostics } from "@/lib/feishu/callback-diagnostics.ts";
+import type { CallbackStage } from "@/lib/feishu/callback-diagnostics.ts";
+
 export async function POST(
   req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
+  return withCallbackDiagnostics((stage) => handleCallback(req, ctx, stage));
+}
+
+async function handleCallback(
+  req: Request,
+  ctx: { params: Promise<{ id: string }> },
+  stage: (value: CallbackStage) => void,
+) {
   const { id } = await ctx.params;
+  stage("database");
   const db = await getDb();
+  stage("binding");
   const binding = await getBindingById(db, id);
   if (!binding) return fail(404, "机器人未配置");
+  stage("body");
   if (Number(req.headers.get("content-length") ?? 0) > 100000)
     return fail(413, "消息过大");
   const raw = await req.text();
   if (raw.length > 100000) return fail(413, "消息过大");
   // 回调要求快速返回，状态记录用 waitUntil 异步写，失败不影响本次响应。
+  stage("runtime");
   const { waitUntil } = await import("#loop-runtime-env");
   try {
+    stage("unseal");
     const secrets = await unseal<FeishuSecrets>(
       binding.secrets,
       getEnv().FEISHU_ENCRYPTION_KEY ?? "",
       id,
     );
+    stage("decode");
     const event = await decodeEvent(
       raw,
       req.headers,
       secrets.encryptKey,
       secrets.verificationToken,
     );
+    stage("app");
     if (event.header?.app_id && event.header.app_id !== binding.app_id)
       return fail(403, "应用不匹配");
     if (event.type === "url_verification" && event.challenge) {
+      stage("challenge");
       waitUntil(
         db
           .prepare(
@@ -49,6 +68,7 @@ export async function POST(
       );
       return json({ challenge: event.challenge });
     }
+    stage("filter");
     if (!binding.enabled) return json({ ok: true });
     if (event.header?.event_type !== "im.message.receive_v1")
       return json({ ok: true });
@@ -60,6 +80,7 @@ export async function POST(
     )
       return json({ ok: true });
     // 企业归属只从已验签的消息记录；不匹配时记下对方企业，设置页据此提示并允许负责人重置。
+    stage("tenant");
     if (!(await pinEventTenant(db, binding, event))) {
       waitUntil(
         db
@@ -74,6 +95,7 @@ export async function POST(
       );
       return fail(403, "应用或企业不匹配");
     }
+    stage("enqueue");
     if (!binding.callback_verified_at)
       await db
         .prepare(
