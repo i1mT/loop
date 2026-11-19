@@ -36,7 +36,7 @@ daemon 只通过 HTTP 访问网关，不连接数据库，也不读取数据库�
 | 配置 | 用途 |
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL 连接串 |
-| `LOOP_PUBLIC_URL` | 对外 HTTP 或 HTTPS 根地址，用于后台通知里的链接 |
+| `LOOP_PUBLIC_URL` | 对外 HTTPS 根地址，用于后台通知里的链接 |
 | `BETTER_AUTH_SECRET` | 会话签名密钥 |
 | `LOOP_ADMIN_TOKEN` | 脚本调用管理 API 的 Bearer 令牌，不能登录页面 |
 | `FEISHU_ENCRYPTION_KEY` | 飞书凭证加密主密钥；留空则不启用飞书 |
@@ -102,7 +102,7 @@ compose 里的数据库口令与 MinIO 账号只用于本机演示，生产必�
 
 ### 反向代理
 
-网关自己不做 TLS。可直接通过 HTTP 访问，也可以放在 Caddy、Nginx 或云负载均衡之后使用 TLS；把 `LOOP_PUBLIC_URL` 设成最终面向用户的 HTTP 或 HTTPS 地址。转发时需要保留原始 `Host` 与 `X-Forwarded-Proto`，否则登录回调与任务链接会指向错误地址。
+网关自己不做 TLS。放在 Caddy、Nginx 或云负载均衡之后，并把 `LOOP_PUBLIC_URL` 设成最终面向用户的 HTTPS 地址。转发时需要保留原始 `Host` 与 `X-Forwarded-Proto`，否则登录回调与任务链接会指向错误地址。
 
 ### 升级
 
@@ -139,7 +139,7 @@ cd apps/web
 
 首次使用 `cf` 时按 CLI 提示完成 Cloudflare 登录。构建与部署使用 `cloudflare.config.ts`，不要另外增加 `wrangler.jsonc`。
 
-部署后确认域名可以打开登录页，管理员可以登录，机器能够连接。飞书后台恢复依赖每分钟的 scheduled trigger，部署输出中应当出现该计划。`LOOP_PUBLIC_URL` 填最终可访问的 HTTP 或 HTTPS 根地址。
+部署后确认域名可以打开登录页，管理员可以登录，机器能够连接。飞书后台恢复依赖每分钟的 scheduled trigger，部署输出中应当出现该计划。`LOOP_PUBLIC_URL` 必须是最终可访问的 HTTPS 根地址。
 
 ## 运行时适配
 
