@@ -259,6 +259,12 @@ export class LoopDaemon extends EventEmitter {
     if (live.pending.size === 0) this.setState(id, "running");
   }
 
+  /** 网关消息留在持久收件箱，直到会话能开始下一轮。 */
+  canStartInboxTurn(id: string): boolean {
+    const live = this.live.get(id);
+    return !!live && !live.turn && live.pending.size === 0;
+  }
+
   /** 发送用户消息：会话空闲时立即开始新一轮，否则排队到本轮结束后执行 */
   reply(id: string, text: string): void {
     const live = this.live.get(id);

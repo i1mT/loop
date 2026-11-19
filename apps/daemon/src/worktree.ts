@@ -95,7 +95,7 @@ export async function commonGitDir(wt: Worktree): Promise<string> {
  * 取消会删掉本地与远端分支，但改动没丢：GitHub 为每个 PR 保留 refs/pull/<n>/head。
  * 依次找：本地分支 → origin/<分支> → PR 记录里的提交，找到就用它重建分支与目录；都找不到返回 "missing"。
  */
-export async function restoreWorktree(opts: { repo: string; wt: Worktree; prNumber: () => Promise<number | null> }): Promise<"exists" | "restored" | "missing"> {
+export async function restoreWorktree(opts: { repo: string; wt: Worktree; prNumber: () => Promise<number | null>; fallbackToBase?: boolean }): Promise<"exists" | "restored" | "missing"> {
   const { repo, wt } = opts;
   if (existsSync(wt.path)) return "exists";
   await git(repo, "worktree", "prune").catch(() => undefined);
@@ -105,6 +105,7 @@ export async function restoreWorktree(opts: { repo: string; wt: Worktree; prNumb
     const n = await opts.prNumber().catch(() => null);
     if (n && (await git(repo, "fetch", "origin", `refs/pull/${n}/head`).then(() => true, () => false))) sha = await resolve("FETCH_HEAD");
   }
+  if (!sha && opts.fallbackToBase) sha = await resolve(wt.base);
   if (!sha) return "missing";
   await git(repo, "worktree", "add", "-B", wt.branch, wt.path, sha);
   return "restored";

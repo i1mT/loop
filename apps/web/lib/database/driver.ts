@@ -17,6 +17,7 @@ export interface SqlQuery {
 }
 
 export interface SqlClient {
+  close?(): Promise<void>;
   query(sql: string, params: unknown[]): Promise<SqlResult>;
   /** 事务里按顺序执行多条语句；失败时整体回滚。 */
   batch(queries: SqlQuery[]): Promise<SqlResult[]>;

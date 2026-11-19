@@ -217,6 +217,14 @@ export const MIGRATIONS: string[][] = [
     `ALTER TABLE project_machines ADD COLUMN IF NOT EXISTS effort TEXT`,
     `UPDATE project_machines b SET agent=p.agent FROM projects p WHERE b.project_id=p.id AND b.agent IS NULL AND p.agent IS NOT NULL`,
   ],
+  // 会话启动前也能收消息。任务收件箱由原会话读取，已有的会话收件箱继续兼容。
+  [
+    `ALTER TABLE inbox ALTER COLUMN session_id DROP NOT NULL`,
+    `ALTER TABLE inbox ADD COLUMN IF NOT EXISTS task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE`,
+    `ALTER TABLE inbox ADD COLUMN IF NOT EXISTS after_publish INTEGER NOT NULL DEFAULT 0`,
+    `CREATE INDEX IF NOT EXISTS idx_inbox_task_pending ON inbox(task_id, id) WHERE delivered_at IS NULL AND task_id IS NOT NULL`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_pending_rewind ON inbox(task_id) WHERE kind='rewind' AND delivered_at IS NULL`,
+  ],
 ];
 
 

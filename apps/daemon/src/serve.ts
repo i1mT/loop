@@ -89,7 +89,7 @@ interface ActiveSession {
   leaseId: string;
   taskId: string;
   forwarded: number; // 已确认回传到的 seq
-  inboxCursor: number;
+  inboxAccepted: Set<number>; // 确认请求失败时只重试确认，不重复执行消息
   lost: boolean; // 租约被网关收回：停止写入
   reportedHead: string | null; // 已经回传过的提交
   /** 这个任务用的代码托管实现：GitHub 用 gh，自建 GitLab 走 REST API */
@@ -359,7 +359,7 @@ export async function serve(opts: ServeOptions): Promise<void> {
         // 用户在页面点了“刷新模型列表”：后台探测，不阻塞领取
         if (r.status === 200 && r.data.probe?.length)
           void probeAgents(r.data.probe);
-        if (c) {
+        if (c && (!c.task.sessionId || !retiring.has(c.task.sessionId))) {
           if (c.task.job === "publish") startPublish(ctx, c);
           else if (running() < concurrency || c.task.reattach)
             await startOrReattach(ctx, c);
@@ -369,7 +369,7 @@ export async function serve(opts: ServeOptions): Promise<void> {
 
       // 2. 收件箱优先：先执行待处理消息，再报告空闲状态与提交，避免恢复时把旧提交重新交给审核
       for (const [sid, a] of active) {
-        if (a.lost) continue;
+        if (a.lost || isPublishing(publishing, a.taskId)) continue;
         const r = await gw.call<{
           ok: boolean;
           items: {
@@ -379,8 +379,12 @@ export async function serve(opts: ServeOptions): Promise<void> {
             requestId: string | null;
             optionId: string | null;
           }[];
-        }>("GET", `/api/daemon/sessions/${sid}/inbox?after=${a.inboxCursor}`);
+        }>("GET", `/api/daemon/sessions/${sid}/inbox?after=0&mode=work`);
         for (const item of r.data.items ?? []) {
+          if (a.inboxAccepted.has(item.id)) {
+            if ((await gw.call("POST", `/api/daemon/inbox/${item.id}/ack`)).status === 200) a.inboxAccepted.delete(item.id);
+            continue;
+          }
           if (item.kind === "republish") {
             // 人点了“重新推送并创建 PR”：清掉回传记录与重试等待，下一轮立刻重新推送、建 PR
             a.reportedHead = null;
@@ -399,23 +403,21 @@ export async function serve(opts: ServeOptions): Promise<void> {
                 )
                   continue;
                 if (!d.isLive(sid)) await d.resume(sid);
+                if (!d.canStartInboxTurn(sid)) continue;
                 d.store.updateMeta(sid, {
                   planRound: a.round,
                   analysisOnly: true,
                 });
                 d.reply(sid, `${item.body ?? ""}${TECHNICAL_PLAN_INSTRUCTION}`);
-              } else
-                await deliver(
-                  d,
-                  sid,
-                  item as Parameters<typeof deliver>[2],
-                  log,
-                );
-            } else
-              await deliver(d, sid, item as Parameters<typeof deliver>[2], log);
+              } else if (!(await deliver(d, sid, { ...item, kind: item.kind }, log))) continue;
+            } else if (!(await deliver(d, sid, { ...item, kind: item.kind }, log))) continue;
+            if (item.kind === "message") {
+              a.reportedHead = null;
+              a.retryAt = 0;
+            }
           }
-          await gw.call("POST", `/api/daemon/inbox/${item.id}/ack`);
-          a.inboxCursor = item.id;
+          a.inboxAccepted.add(item.id);
+          if ((await gw.call("POST", `/api/daemon/inbox/${item.id}/ack`)).status === 200) a.inboxAccepted.delete(item.id);
         }
       }
 
@@ -954,11 +956,11 @@ async function startOrReattach(ctx: Ctx, claim: Claim): Promise<void> {
   };
   // 本进程已经在管理这个会话（每轮领取都会把自己持有的任务再返回一次）：只更新租约，不重置回传进度
   const known = t.sessionId ? active.get(t.sessionId) : undefined;
-  if (known && !known.lost) {
-    known.leaseId = claim.leaseId;
-    return;
+  if (known && !known.lost && known.leaseId === claim.leaseId) return;
+  if (known) {
+    await d.cancel(t.sessionId!, { local: true }).catch(() => undefined);
+    active.delete(t.sessionId!);
   }
-  if (known) active.delete(t.sessionId!); // 租约丢过又被重新派到本机：按重新接管处理，不新开会话
   // 本机已有这个任务的会话，一律接管它，绝不新开会话（否则同一任务会被做两遍）
   if (t.sessionId && d.store.getMeta(t.sessionId)) {
     const sid = t.sessionId;
@@ -976,6 +978,7 @@ async function startOrReattach(ctx: Ctx, claim: Claim): Promise<void> {
       const r = await restoreWorktree({
         repo: meta.repo,
         wt: { path: meta.cwd, branch: meta.branch, base: meta.base },
+        fallbackToBase: !t.prNumber,
         prNumber: () =>
           forge.lastPrNumber({
             githubRepo: t.githubRepo!,
@@ -1035,7 +1038,7 @@ async function startOrReattach(ctx: Ctx, claim: Claim): Promise<void> {
       leaseId: claim.leaseId,
       taskId: t.id,
       forwarded,
-      inboxCursor: 0,
+      inboxAccepted: new Set(),
       lost: false,
       reportedHead: null,
       repoDir: meta.repo,
@@ -1099,7 +1102,7 @@ async function startOrReattach(ctx: Ctx, claim: Claim): Promise<void> {
     leaseId: claim.leaseId,
     taskId: t.id,
     forwarded: -1,
-    inboxCursor: 0,
+    inboxAccepted: new Set(),
     lost: false,
     reportedHead: null,
     repoDir,
@@ -1163,7 +1166,7 @@ async function drainPublishMessages(ctx: Ctx, sid: string): Promise<string> {
   const r = await ctx.gw
     .call<{ items?: { id: number; kind: string; body: string | null }[] }>(
       "GET",
-      `/api/daemon/sessions/${sid}/inbox?after=0`,
+      `/api/daemon/sessions/${sid}/inbox?after=0&mode=publish`,
     )
     .catch(() => ({ status: 0, data: {} as { items?: { id: number; kind: string; body: string | null }[] } }));
   const notes: string[] = [];
@@ -1315,17 +1318,21 @@ async function deliver(
     optionId: string | null;
   },
   log: (m: string) => void,
-): Promise<void> {
+): Promise<boolean> {
   try {
     if (item.kind === "decision") {
       if (item.requestId) d.answer(sid, item.requestId, item.optionId!);
       else await d.resolveNeedsYou(sid, item.optionId!);
-      return;
+    } else {
+      if (!d.isLive(sid)) await d.resume(sid);
+      if (!d.canStartInboxTurn(sid)) return false;
+      d.reply(sid, item.body ?? "");
     }
-    if (!d.isLive(sid)) await d.resume(sid);
-    d.reply(sid, item.body ?? "");
+    return true;
   } catch (e) {
     log(`投递回复失败（会话 ${sid}）：${(e as Error).message}`);
+    // 过期的权限请求无法重答，普通消息仍留在收件箱。
+    return item.kind === "decision";
   }
 }
 

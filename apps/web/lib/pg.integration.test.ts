@@ -67,10 +67,10 @@ test("从空库一路迁移到最新（新部署走的路径）", { skip }, asyn
   const admin = new Db(url!);
   const name = `mig_${Date.now()}`;
   await admin.prepare(`CREATE DATABASE ${name}`).run();
+  const u = new URL(url!);
+  u.pathname = `/${name}`;
+  const fresh = new Db(u.toString());
   try {
-    const u = new URL(url!);
-    u.pathname = `/${name}`;
-    const fresh = new Db(u.toString());
     assert.equal(await migrate(fresh), MIGRATIONS.length);
     const tables = (await fresh.prepare(`SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name`).all<{ table_name: string }>()).results.map((r) => r.table_name);
     for (const t of ["machines", "machine_agents", "projects", "tasks", "leases", "sessions", "session_events", "inbox", "notifications", "daemon_claude_sessions", "kv"]) {
@@ -80,6 +80,8 @@ test("从空库一路迁移到最新（新部署走的路径）", { skip }, asyn
     const cols = (await fresh.prepare(`SELECT column_name FROM information_schema.columns WHERE table_name='projects'`).all<{ column_name: string }>()).results.map((r) => r.column_name);
     for (const c of ["github_repo", "machine_id", "agent", "local_path"]) assert.ok(cols.includes(c), `projects 缺少列 ${c}`);
   } finally {
+    await fresh.close();
     await admin.prepare(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`).run();
+    await admin.close();
   }
 });

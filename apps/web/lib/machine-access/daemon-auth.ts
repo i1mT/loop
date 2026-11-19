@@ -15,7 +15,7 @@ export async function authenticateDaemon(db: Db, req: Request, token: string, le
     const [, kind, id] = match;
     const query = kind === "leases" ? `SELECT daemon_id AS id FROM leases WHERE id=?`
       : kind === "sessions" ? `SELECT t.machine_id AS id FROM sessions s JOIN tasks t ON t.id=s.task_id WHERE s.id=?`
-      : kind === "inbox" ? `SELECT t.machine_id AS id FROM inbox i JOIN sessions s ON s.id=i.session_id JOIN tasks t ON t.id=s.task_id WHERE i.id=?`
+      : kind === "inbox" ? `SELECT t.machine_id AS id FROM inbox i LEFT JOIN sessions s ON s.id=i.session_id JOIN tasks t ON t.id=COALESCE(i.task_id,s.task_id) WHERE i.id=?`
       : `SELECT machine_id AS id FROM tasks WHERE id=?`;
     resourceMachine = (await db.prepare(query).bind(decodeURIComponent(id)).first<{ id: string }>())?.id ?? null;
     // 第一次事件会创建 session；此时用租约确定机器，已存在的 session 必须以数据库归属为准。

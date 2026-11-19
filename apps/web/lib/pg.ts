@@ -85,6 +85,10 @@ export class Db {
     this.client = createSqlClient(url);
   }
 
+  async close(): Promise<void> {
+    await this.client.close?.();
+  }
+
   prepare(sql: string): Statement {
     return new Statement(this.client, sql);
   }

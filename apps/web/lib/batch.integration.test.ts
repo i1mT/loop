@@ -7,7 +7,8 @@ import { migrate } from "./migrations.ts";
 import { useDb } from "./db.ts";
 import { hello } from "./machines.ts";
 import { createProject, getTask, listTasks, restartTask, setProjectArchived, setStage } from "./tasks.ts";
-import { claim, iterateTask } from "./daemon-api.ts";
+import { claim, undeliveredInbox } from "./daemon-api.ts";
+import { sendTaskReply } from "./task-conversation.ts";
 import { feedbackProgress, flushPool, getAllPools, getBatchSettings, getPool, listTaskFeedbacks, saveBatchSettings, submitFeedback, withdrawFeedback, type BatchSettings } from "./batch.ts";
 import type { Classification, Scale } from "./classify.ts";
 
@@ -245,15 +246,14 @@ test("继续迭代：已发布的任务回到进行中（第 2 轮），消息�
   const p = await createProject({ name: `iterate-${run}`, machineId: IM, agent: "grok", githubRepo: "o/r" });
   projectIds.push(p.id);
   const t = (await submitFeedback({ projectId: p.id, title: "改输入框 medium", body: "x" }, deps)).task!;
-  assert.match((await iterateTask(t.id, "还要改")).error!, /只有已发布/);
   await d.prepare(`INSERT INTO sessions (id, task_id, agent, state, created_at, updated_at) VALUES (?, ?, 'grok', 'cancelled', ?, ?)`).bind(`${run}-it`, t.id, Date.now(), Date.now()).run();
   await d.prepare(`UPDATE tasks SET stage='published', head_sha='abc1234', approved_sha='abc1234', pr_url='https://github.com/o/r/pull/9', pr_number=9 WHERE id=?`).bind(t.id).run();
   assert.equal((await getTask(t.id))!.round, 1);
-  const r = await iterateTask(t.id, "输入框要用 textarea");
-  assert.deepEqual(r, { ok: true, round: 2 });
+  const r = await sendTaskReply(t.id, "输入框要用 textarea");
+  assert.deepEqual(r, { ok: true, round: 2, deferred: false });
   const after = (await getTask(t.id))!;
   assert.deepEqual([after.stage, after.round, after.head_sha, after.approved_sha, after.pr_url, after.pr_number], ["running", 2, null, null, null, null]);
-  const msgs = (await d.prepare(`SELECT kind, body FROM inbox WHERE session_id=? AND delivered_at IS NULL`).bind(`${run}-it`).all<{ kind: string; body: string }>()).results;
+  const msgs = (await undeliveredInbox(`${run}-it`, 0)).map(({ kind, body }) => ({ kind, body }));
   assert.deepEqual(msgs, [{ kind: "message", body: "输入框要用 textarea" }]);
   // 守护进程领回：进行中、没有有效租约；带上轮次
   const got = (await claim(IM))!;

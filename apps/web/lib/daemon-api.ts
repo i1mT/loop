@@ -10,6 +10,7 @@ import {
   setStage,
   type TaskRow,
 } from "./tasks.ts";
+import { resumeAfterPublish, sendTaskReply } from "./task-conversation.ts";
 import { touchMachine } from "./machines.ts";
 import { nextTaskStage, type SessionState } from "./session-stage.ts";
 import {
@@ -18,7 +19,7 @@ import {
   recordTaskResult,
 } from "./task-plan/service.ts";
 import {
-  canIterate,
+  canDrainWorkInbox,
   canOverrideOutcome,
   canRepublish,
   canRestore,
@@ -44,6 +45,7 @@ export async function claim(
     ? ""
     : " AND NOT EXISTS (SELECT 1 FROM task_plan_rounds r WHERE r.task_id=t.id AND r.round=t.round)";
   await touchMachine(db, daemonId); // 每次领取都刷新在线状态
+  await resumeAfterPublish(daemonId);
   const mine = await db
     .prepare(
       `SELECT t.* , l.id AS lease_id FROM leases l JOIN tasks t ON t.id = l.task_id
@@ -62,12 +64,15 @@ export async function claim(
         `SELECT t.* FROM tasks t
          WHERE t.machine_id = ?
            AND (t.stage IN ('queued', 'approved')
+             OR (t.stage IN ('needs_you','plan_approved','plan_reviewing')
+                 AND EXISTS (SELECT 1 FROM inbox i WHERE i.task_id=t.id AND i.delivered_at IS NULL)
+                 AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.task_id=t.id AND l.released=0 AND l.expires_at>?))
              OR (t.stage IN ('running', 'publishing') AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.task_id=t.id AND l.released=0 AND l.expires_at>?))
              OR (t.stage = 'reviewing' AND t.head_sha IS NULL AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.task_id=t.id AND l.released=0 AND l.expires_at>?)))
          ${supported}
          ORDER BY CASE WHEN t.stage='approved' THEN 0 WHEN t.priority='urgent' THEN 0 ELSE 1 END, t.created_at ASC LIMIT 1`,
       )
-      .bind(daemonId, t, t)
+      .bind(daemonId, t, t, t)
       .first<TaskRow>();
     task = q ?? null;
   }
@@ -113,8 +118,11 @@ export async function claim(
   }
   // 已批准的任务，无论是新领取还是同一守护进程接管，本次都是发布任务
   if (task.stage === "approved") {
-    await setStage(task.id, "publishing");
-    task = { ...task, stage: "publishing" };
+    const claimed = await db.prepare(
+      `UPDATE tasks SET stage='publishing', updated_at=? WHERE id=? AND stage='approved' AND round=? RETURNING *`,
+    ).bind(now(), task.id, task.round).first<TaskRow>();
+    if (!claimed) return null;
+    task = claimed;
   }
   const job =
     task.stage === "publishing" || task.stage === "approved"
@@ -273,11 +281,11 @@ export async function transitionTo(
 ): Promise<{ stage: Stage; rejected: boolean }> {
   const task = await getTask(taskId);
   if (!task) return { stage: "failed", rejected: true };
-  const technicalPlan = await getTechnicalPlan(
-    await getDb(),
-    taskId,
-    task.round ?? 1,
-  );
+  const db = await getDb();
+  if (state === "idle" && await db.prepare(
+    `SELECT 1 FROM inbox WHERE task_id=? AND kind='message' AND delivered_at IS NULL LIMIT 1`,
+  ).bind(taskId).first()) return { stage: task.stage, rejected: false };
+  const technicalPlan = await getTechnicalPlan(db, taskId, task.round);
   if (
     technicalPlan &&
     technicalPlan.phase !== "implementing" &&
@@ -553,10 +561,11 @@ export async function approveTask(
     };
   if (!task.head_sha) return { ok: false, error: "还没有可审核的提交" };
   const db = await getDb();
-  await stageChange(db,db.prepare(
-      `UPDATE tasks SET approved_sha=?, stage='approved', updated_at=? WHERE id=?`,
-    )
-    .bind(task.head_sha, now(), taskId),taskId,reason);
+  const approved = await stageChange(db, db.prepare(
+    `UPDATE tasks SET approved_sha=?, stage='approved', updated_at=?
+     WHERE id=? AND stage='reviewing' AND round=? AND head_sha=?`,
+  ).bind(task.head_sha, now(), taskId, task.round, task.head_sha), taskId, reason);
+  if (!approved.rowCount) return { ok: false, error: "审核对象已变化，请刷新后再次审核" };
   await notify(
     taskId,
     "approved",
@@ -820,6 +829,7 @@ export async function overrideOutcome(
 export async function undeliveredInbox(
   sessionId: string,
   after: number,
+  mode: "work" | "publish" | "legacy" = "legacy",
 ): Promise<
   {
     id: number;
@@ -830,12 +840,19 @@ export async function undeliveredInbox(
   }[]
 > {
   const db = await getDb();
+  const task = await db.prepare(
+    `SELECT t.id,t.stage FROM sessions s JOIN tasks t ON t.id=s.task_id WHERE s.id=?`,
+  ).bind(sessionId).first<{ id: string; stage: Stage }>();
+  if (!task) return [];
+  const publishing = task.stage === "publishing";
+  if (mode === "publish" ? !publishing : !canDrainWorkInbox(task.stage) && !(mode === "legacy" && publishing)) return [];
   return (
     await db
       .prepare(
-        `SELECT id, kind, body, request_id AS "requestId", option_id AS "optionId" FROM inbox WHERE session_id=? AND delivered_at IS NULL AND id>? ORDER BY id ASC`,
+        `SELECT id, kind, body, request_id AS "requestId", option_id AS "optionId" FROM inbox
+         WHERE (session_id=? OR task_id=?) AND delivered_at IS NULL AND after_publish=0 AND id>? ORDER BY id ASC`,
       )
-      .bind(sessionId, after)
+      .bind(sessionId, !publishing ? task.id : null, after)
       .all<{
         id: number;
         kind: string;
@@ -997,27 +1014,18 @@ export async function retryPublishTask(
       ok: false,
       error: "这个任务没有会话记录，不能重试发布；请用“重新开始”",
     };
-  const text = note?.trim();
-  await db.batch([
-    db
-      .prepare(`UPDATE leases SET released=1 WHERE task_id=? AND released=0`)
-      .bind(taskId),
-    db
-      .prepare(
-        `UPDATE tasks SET stage='publishing', error=NULL, updated_at=? WHERE id=?`,
-      )
-      .bind(now(), taskId),
-    // 人的补充要求随发布任务一起投递，守护进程在发送发布指令前取走。
-    ...(text
-      ? [
-          db
-            .prepare(
-              `INSERT INTO inbox(session_id,kind,body,created_at) VALUES(?,'message',?,?)`,
-            )
-            .bind(s.id, text, now()),
-        ]
-      : []),
-  ]);
+  const text = note?.trim() || null;
+  const at = now();
+  const retried = await db.prepare(`WITH restarted AS (
+    UPDATE tasks SET stage='publishing', error=NULL, updated_at=? WHERE id=? AND stage=? AND round=?
+    RETURNING id
+  ), released AS (
+    UPDATE leases SET released=1 WHERE task_id IN (SELECT id FROM restarted) AND released=0
+  ), message AS (
+    INSERT INTO inbox(session_id,kind,body,created_at)
+    SELECT ?,'message',?,? FROM restarted WHERE ?::text IS NOT NULL
+  ) SELECT id FROM restarted`).bind(at, taskId, task.stage, task.round, s.id, text, at, text).first();
+  if (!retried) return { ok: false, error: "任务状态已经变化，请刷新后重试" };
   await notify(
     taskId,
     "publishing",
@@ -1085,48 +1093,5 @@ export async function iterateTask(
   taskId: string,
   text: string,
 ): Promise<{ ok: boolean; error?: string; round?: number }> {
-  const task = await getTask(taskId);
-  if (!task) return { ok: false, error: "任务不存在" };
-  if (!canIterate(task.stage))
-    return {
-      ok: false,
-      error: `当前阶段是 ${STAGE_LABEL[task.stage] ?? task.stage}，只有已发布的任务可以继续迭代`,
-    };
-  const db = await getDb();
-  const s = await db
-    .prepare(
-      `SELECT id FROM sessions WHERE task_id=? ORDER BY created_at DESC LIMIT 1`,
-    )
-    .bind(taskId)
-    .first<{ id: string }>();
-  if (!s)
-    return { ok: false, error: "这个任务没有会话，不能继续迭代；请新建任务" };
-  const round = (task.round ?? 1) + 1;
-  const advancedResult = await stageChange(db,db.prepare(
-      `WITH advanced AS (
-      UPDATE tasks SET stage='running', round=?, plan_approved=0, head_sha=NULL, approved_sha=NULL,
-        merge_sha=NULL, merged_at=NULL, pr_number=NULL, pr_url=NULL, error=NULL, updated_at=? WHERE id=? AND stage='published' AND round=? RETURNING id,project_id,round
-    ), message AS (
-      INSERT INTO inbox(session_id,kind,body,created_at) SELECT ?,'message',?,? FROM advanced RETURNING id
-    ), released AS (
-      UPDATE leases SET released=1 WHERE task_id IN (SELECT id FROM advanced) AND released=0 RETURNING id
-    ), plan AS (
-      INSERT INTO task_plan_rounds(task_id,round,binding_id,wiki_url,updated_at)
-      SELECT a.id,a.round,COALESCE(old.binding_id,b.id),COALESCE(old.wiki_url,b.wiki_url),?
-      FROM advanced a JOIN projects p ON p.id=a.project_id
-      LEFT JOIN task_plan_rounds old ON old.task_id=a.id AND old.round=a.round-1
-      LEFT JOIN space_feishu_bindings b ON b.space_id=p.space_id AND b.enabled=1
-      WHERE COALESCE(old.binding_id,b.id) IS NOT NULL ON CONFLICT(task_id,round) DO NOTHING RETURNING task_id
-    ) SELECT round FROM advanced`,
-    )
-    .bind(round, now(), taskId, task.round ?? 1, s.id, text, now(), now())
-    ,taskId,text);
-  const advanced=advancedResult.rows[0] as {round:number}|undefined;
-  if (!advanced) return { ok: false, error: "任务状态已经变化，请刷新后重试" };
-  await notify(
-    taskId,
-    "iterate",
-    `继续迭代（第 ${round} 轮）：${text.slice(0, 80)}`,
-  );
-  return { ok: true, round };
+  return sendTaskReply(taskId, text);
 }

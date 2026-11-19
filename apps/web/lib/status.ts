@@ -47,10 +47,23 @@ export const canRestore = (s: Stage): boolean => ["rejected", "failed", "cancell
 export const canRepublish = (s: Stage, hasPr: boolean): boolean => s === "reviewing" && !hasPr;
 /** 已经有 PR（通常已合并）但发布失败：复用原 PR 直接重试发布，不要再走“重建分支 + 新建 PR” */
 export const canRetryPublish = (s: Stage, hasPr: boolean, hasApproved: boolean, hasMerge: boolean): boolean => ["failed", "publish_review", "reviewing"].includes(s) && (hasMerge || (hasPr && hasApproved));
-/** 已发布：有新意见可以继续迭代——同一个会话接着改（保留上下文），新开一个 PR，审核后再次发布 */
-export const canIterate = (s: Stage): boolean => s === "published";
-/** 能往会话里发消息：还有会话在管理的阶段，或已发布（发消息即开始新一轮）；失败、驳回、取消的任务没人会取走消息 */
-export const canReply = (s: Stage): boolean => !TERMINAL.has(s) || canIterate(s);
+export type ReturnStage = "reviewing" | "development";
+
+/** 已合并的 PR 无法撤回审批，继续开发时保留原会话并另开一轮。 */
+export const startsNewRound = (stage: Stage, merged: boolean): boolean =>
+  stage === "published" || stage === "publish_review" || (merged && (stage === "failed" || stage === "reviewing"));
+
+export function previousTaskStage(stage: Stage, merged: boolean, hasHead: boolean): ReturnStage | null {
+  if (stage === "approved" || stage === "publishing" || (stage === "failed" && (hasHead || merged))) return "reviewing";
+  if ((stage === "published" || stage === "publish_review") && merged) return "reviewing";
+  if (startsNewRound(stage, merged)) return "development";
+  if (stage === "reviewing" || stage === "plan_reviewing") return "development";
+  return null;
+}
+
+export const resumesClosedTask = (s: Stage): boolean => s === "failed" || s === "rejected" || s === "cancelled";
+export const revisesReview = (s: Stage): boolean => s === "reviewing" || s === "approved" || s === "plan_reviewing";
+export const canDrainWorkInbox = (s: Stage): boolean => !TERMINAL.has(s) && s !== "publishing" && s !== "publish_review";
 /** 任务可以取消（由状态机决定） */
 export const canCancel = (s: Stage): boolean => canTransition(s, "cancelled");
 /** 发布环节与失败态：人可以手动改结果 */

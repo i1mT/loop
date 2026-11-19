@@ -55,11 +55,14 @@ test("合成任务的优先级取成员里最高的", () => {
   assert.equal(highestPriority([]), "low");
 });
 
-import { canIterate, canReply } from "./status.ts";
+import { previousTaskStage, startsNewRound } from "./status.ts";
 
-test("继续迭代：只有已发布的可以；失败、驳回、取消的任务不能再往会话发消息", () => {
-  assert.equal(canIterate("published"), true);
-  for (const s of ["running", "reviewing", "failed", "rejected", "cancelled"] as const) assert.equal(canIterate(s), false, s);
-  for (const s of ["running", "reviewing", "needs_you", "published"] as const) assert.equal(canReply(s), true, s);
-  for (const s of ["failed", "rejected", "cancelled"] as const) assert.equal(canReply(s), false, s);
+test("合并后继续开发开启新一轮，发布结果可退回审核", () => {
+  assert.equal(startsNewRound("published", true), true);
+  assert.equal(startsNewRound("failed", true), true);
+  assert.equal(startsNewRound("failed", false), false);
+  assert.equal(previousTaskStage("approved", false, true), "reviewing");
+  assert.equal(previousTaskStage("publish_review", true, true), "reviewing");
+  assert.equal(previousTaskStage("reviewing", true, true), "development");
+  assert.equal(previousTaskStage("publishing", true, true), "reviewing");
 });

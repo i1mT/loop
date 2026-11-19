@@ -5,6 +5,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const denied = await requireRole(req, "daemon");
   if (denied) return denied;
   const { id } = await params;
-  const after = Number(new URL(req.url).searchParams.get("after") ?? 0);
-  return json({ ok: true, items: await undeliveredInbox(id, Number.isFinite(after) ? after : 0) });
+  const search = new URL(req.url).searchParams;
+  const after = Number(search.get("after") ?? 0);
+  const requested = search.get("mode");
+  const mode = requested === "publish" || requested === "work" ? requested : "legacy";
+  return json({ ok: true, items: await undeliveredInbox(id, Number.isFinite(after) ? after : 0, mode) });
 }

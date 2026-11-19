@@ -9,7 +9,8 @@ import { Textarea } from "@/components/ui/field.tsx";
 import { useToast } from "@/components/ui/toast.tsx";
 import { ApiError, apiPost, mutate } from "@/lib/client-api.ts";
 import { fold, type Ev, type Item, type Pending } from "@/lib/session-fold.ts";
-import { SESSION_STATE_LABEL } from "@/lib/status.ts";
+import { SESSION_STATE_LABEL, startsNewRound } from "@/lib/status.ts";
+import type { TaskItem } from "@/lib/types.ts";
 
 const TOOL_STATUS: Record<string, string> = { pending: "等待", in_progress: "进行中", completed: "完成", failed: "失败" };
 
@@ -143,7 +144,10 @@ function Items({ items, onAnswer, busy, answering }: { items: Item[]; onAnswer: 
   return <>{out}</>;
 }
 
-export function Conversation({ taskId, events, pending, waiting, reload, readOnly, iterate, hasMore, loadingOlder, loadOlder }: { taskId: string; events: Ev[]; pending: Pending[]; waiting: boolean; reload: () => void; readOnly?: boolean; /** 已发布：发送即开始新一轮（同一个会话接着改，新开 PR，再次发布） */ iterate?: boolean; hasMore: boolean; loadingOlder: boolean; loadOlder: () => void }) {
+export function Conversation({ task, events, pending, waiting, reload, hasMore, loadingOlder, loadOlder }: { task: TaskItem; events: Ev[]; pending: Pending[]; waiting: boolean; reload: () => void; hasMore: boolean; loadingOlder: boolean; loadOlder: () => void }) {
+  const taskId = task.id;
+  const newRound = startsNewRound(task.stage, !!task.merge_sha);
+  const sendingAfterPublish = task.stage === "publishing";
   const toast = useToast();
   const { items } = useMemo(() => fold(events), [events]);
   const [text, setText] = useState("");
@@ -153,36 +157,45 @@ export function Conversation({ taskId, events, pending, waiting, reload, readOnl
   const stick = useRef(true);
   const loadingOlderRef = useRef(false);
   const prevHeight = useRef<number | null>(null);
+  const oldest = events[0]?.seq;
 
-  useEffect(() => {
-    const el = box.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [items.length, pending.length]);
-
-  // 加载更早的消息后保持原来的阅读位置，不把用户甩到底部。
+  // 加载历史时保留阅读位置。普通更新（包括同一条消息持续输出）跟随最新内容。
   useLayoutEffect(() => {
     const el = box.current;
-    if (loadingOlderRef.current && el && prevHeight.current !== null)
-      el.scrollTop += el.scrollHeight - prevHeight.current;
-    loadingOlderRef.current = false;
+    if (el && prevHeight.current !== null) el.scrollTop += el.scrollHeight - prevHeight.current;
     prevHeight.current = null;
-  }, [events.length]);
+  }, [oldest]);
+
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [events, pending.length]);
 
   useEffect(() => {
-    if (!loadingOlder) loadingOlderRef.current = false;
+    if (!loadingOlder) {
+      loadingOlderRef.current = false;
+      prevHeight.current = null;
+    }
   }, [loadingOlder]);
 
+  function showOlder() {
+    const el = box.current;
+    if (!el || !hasMore || loadingOlder || loadingOlderRef.current) return;
+    loadingOlderRef.current = true;
+    stick.current = false;
+    prevHeight.current = el.scrollHeight;
+    loadOlder();
+  }
+
   async function send() {
-    if (!text.trim()) return;
+    if (busy || !text.trim()) return;
     setBusy(true);
     try {
-      await apiPost(`/api/tasks/${taskId}/reply`, { text });
-      setText("");
+      const result = await apiPost<{ deferred: boolean }>(`/api/tasks/${taskId}/reply`, { text });
+      setText((draft) => draft === text ? "" : draft);
       stick.current = true;
-      if (iterate) {
-        mutate("/api/tasks");
-        toast("ok", "已开始新一轮：智能体会在同一个会话里接着改，完成后新开 PR 等你审核");
-      }
+      mutate("/api/tasks");
+      if (result.deferred) toast("ok", "消息已保存，当前发布结束后交给智能体继续开发");
       reload();
     } catch (e) {
       toast("error", e instanceof ApiError ? e.message : "发送失败");
@@ -212,56 +225,60 @@ export function Conversation({ taskId, events, pending, waiting, reload, readOnl
         onScroll={(e) => {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-          if (el.scrollTop < 80 && hasMore && !loadingOlder && !loadingOlderRef.current) {
-            loadingOlderRef.current = true;
-            prevHeight.current = el.scrollHeight;
-            loadOlder();
-          }
+          if (!stick.current && el.scrollTop < 48) showOlder();
         }}
-        className="grid max-h-[60dvh] min-h-48 content-start gap-3 overflow-y-auto px-1 py-4"
+        onWheel={(e) => {
+          if (e.deltaY < 0 && e.currentTarget.scrollTop < 48) showOlder();
+        }}
+        className="h-[clamp(16rem,52dvh,38rem)] overflow-y-auto [overflow-anchor:none] px-1 py-4"
+        aria-label="会话历史"
         aria-live="polite"
+        role="region"
+        tabIndex={0}
       >
-        {hasMore && (
-          <p className="py-1 text-center text-xs text-ink-3">
-            {loadingOlder ? "正在加载更早的消息…" : "向上滚动加载更早的消息"}
-          </p>
-        )}
-        {items.length === 0 ? <p className="py-10 text-center text-sm text-ink-2">还没有会话内容。机器领取任务后，智能体的输出会实时显示在这里。</p> : <Items items={items} onAnswer={answer} busy={busy || pending.some((p) => p.kind === "decision")} answering={answering} />}
-        {pending.map((p) => (
-          <p key={p.id} className="justify-self-end text-xs text-ink-3">
-            {p.kind === "decision" ? `已提交回答：${p.optionId}` : `已发送：${p.body}`}（等待机器取走）
-          </p>
-        ))}
+        <div className="grid min-h-full content-end gap-3">
+          {hasMore && (
+            <div className="flex justify-center">
+              <Button size="sm" variant="ghost" loading={loadingOlder} onClick={showOlder}>加载更早的消息</Button>
+            </div>
+          )}
+          {items.length === 0 ? <p className="py-10 text-center text-sm text-ink-2">还没有会话内容。机器领取任务后，智能体的输出会实时显示在这里。</p> : <Items items={items} onAnswer={answer} busy={busy || pending.some((p) => p.kind === "decision")} answering={answering} />}
+          {pending.filter((p) => p.kind !== "rewind").map((p) => (
+            <p key={p.id} className="max-w-full justify-self-end whitespace-pre-wrap break-words text-xs text-ink-3">
+              {p.kind === "decision" ? `已提交回答：${p.optionId}` : `已发送：${p.body}`}（{sendingAfterPublish ? "发布结束后继续" : "等待智能体处理"}）
+            </p>
+          ))}
+        </div>
       </div>
-      {!readOnly && (
-        <form
-          className="border-t border-line pt-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void send();
+      <form
+        className="border-t border-line pt-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void send();
+        }}
+      >
+        <Textarea
+          aria-label="给智能体的消息"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              void send();
+            }
           }}
-        >
-          <Textarea
-            aria-label="给智能体的消息"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-            rows={3}
-            placeholder={iterate ? "任务已经发布。还有意见？写在这里，智能体会在同一个会话里接着改（保留上下文），新开一个 PR，审核后再次发布（⌘/Ctrl + Enter 发送）" : waiting ? "智能体在等你：可以直接回复，或点上面的选项" : "有修改意见？写在这里，智能体会在同一个 PR 上继续改（⌘/Ctrl + Enter 发送）"}
-          />
-          <div className="mt-2 flex justify-end">
-            <Button type="submit" variant="primary" loading={busy} disabled={!text.trim()}>
-              <Send className="size-4" aria-hidden />
-              {iterate ? "继续迭代" : "发送"}
-            </Button>
-          </div>
-        </form>
-      )}
+          rows={3}
+          placeholder={waiting ? "智能体在等你回复，也可以选择上方的选项" : "给智能体发消息（⌘/Ctrl + Enter）"}
+        />
+        <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
+          {newRound && <p className="mr-auto text-xs text-ink-3">发送后沿用原会话继续开发，改动会进入新的 PR。</p>}
+          {sendingAfterPublish && <p className="mr-auto text-xs text-ink-3">消息将在当前发布结束后交给智能体处理。</p>}
+          <Button type="submit" variant="primary" loading={busy} disabled={!text.trim()}>
+            <Send className="size-4" aria-hidden />
+            发送
+          </Button>
+        </div>
+      </form>
     </div>
   );
 }

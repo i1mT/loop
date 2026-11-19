@@ -11,6 +11,7 @@ import { machineRequestAllowed } from "./machine-access/request.ts";
 import { hello, listMachines } from "./machines.ts";
 import { createProject, createTask } from "./tasks.ts";
 import { claim, ingestEvents } from "./daemon-api.ts";
+import { sendTaskReply } from "./task-conversation.ts";
 
 const skip = !process.env.DATABASE_URL;
 test("机器隔离：一次性接入、双用户/空间、私有与共享、跨机器所有路由、凭证撤销", { skip }, async () => {
@@ -56,6 +57,8 @@ test("机器隔离：一次性接入、双用户/空间、私有与共享、跨�
   await ingestEvents(sid,lease.leaseId,machine.machineId,[]);
   await db.prepare(`INSERT INTO inbox (session_id,kind,body,created_at) VALUES (?,'message','hello',0)`).bind(sid).run();
   const inbox = (await db.prepare(`SELECT id FROM inbox WHERE session_id=?`).bind(sid).first<{id:number}>())!;
+  assert.equal((await sendTaskReply(task.id, "任务收件箱消息")).ok, true);
+  const taskInbox = (await db.prepare(`SELECT id FROM inbox WHERE task_id=?`).bind(task.id).first<{ id: number }>())!;
   const secondPairing = await createPairing(db,b,s,"另一台机器");
   const second = (await redeemPairing(db,secondPairing.code))!;
   for (const [suffix,body,method] of [
@@ -63,6 +66,7 @@ test("机器隔离：一次性接入、双用户/空间、私有与共享、跨�
     [`sessions/${sid}/inbox`,{},"GET"],
     [`sessions/${sid}/head`,{daemonId:machine.machineId,leaseId:lease.leaseId},"POST"],
     [`inbox/${inbox.id}/ack`,{},"POST"],
+    [`inbox/${taskInbox.id}/ack`,{},"POST"],
     [`tasks/${task.id}/technical-plan`,{},"GET"],
   ] as const) {
     assert.equal(await check(suffix,body,machine.token,method),true,suffix);
@@ -77,6 +81,7 @@ test("机器隔离：一次性接入、双用户/空间、私有与共享、跨�
   const request = (url:string,body:unknown={})=>new Request(`https://fixture/api/${url}`,{method:"POST",body:JSON.stringify(body)});
   assert.equal(await machineRequestAllowed(db,request("tasks",{projectId:project.id}),b,s),false);
   assert.equal(await machineRequestAllowed(db,request(`tasks/${task.id}/reply`),b,s),false);
+  assert.equal(await machineRequestAllowed(db,request(`tasks/${task.id}/rewind`),b,s),false);
   assert.equal(await machineRequestAllowed(db,request(`projects/${project.id}/pool/flush`),b,s),false);
   assert.equal(await machineRequestAllowed(db,request("projects",{machineId:machine.machineId}),b,s),false);
   assert.equal(await machineRequestAllowed(db,request(`machines/${machine.machineId}/refresh-models`),b,s),false);

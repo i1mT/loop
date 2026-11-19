@@ -142,9 +142,9 @@ export function ReviewCard({ task, checks, reload }: { task: TaskItem; checks: E
         <div className="grid gap-3">
           {task.merge_sha ? (
             <>
-              <h2 className="text-[15px] font-semibold">代码已经合并</h2>
+              <h2 className="text-[15px] font-semibold">审核发布</h2>
               <p className="text-[13px] text-ink-2">
-                PR 已合并（<span className="num">{shortSha(task.merge_sha)}</span>），代码已经在主分支。这里不需要再重建分支或创建 PR；如果只是发布失败，直接重试发布即可。
+                PR 已合并（<span className="num">{shortSha(task.merge_sha)}</span>）。确认后可以重试发布，需要修改代码时直接在会话里发消息。
               </p>
               <Button variant="primary" loading={busy === "retry-publish"} disabled={!!busy} onClick={retryPublish}>
                 重试发布（复用已合并的 PR）

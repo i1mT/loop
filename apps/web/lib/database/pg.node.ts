@@ -18,6 +18,7 @@ export function createSqlClient(url: string): SqlClient {
   };
 
   return {
+    close: () => pool.end(),
     query: (sql, params) => run({ sql, params }),
     async batch(queries: SqlQuery[]): Promise<SqlResult[]> {
       if (queries.length === 0) return [];

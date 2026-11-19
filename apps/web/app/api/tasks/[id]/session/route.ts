@@ -1,6 +1,7 @@
 import { requestUserId } from "@/lib/machine-access/request.ts";
 import { fail, json, requireRole } from "@/lib/http.ts";
 import { getDb } from "@/lib/db.ts";
+import { pendingConversation } from "@/lib/task-conversation.ts";
 import { getProject, getTask } from "@/lib/tasks.ts";
 
 // 会话视图的增量接口：返回最近会话 seq 之后的事件，以及尚未投递给守护进程的收件箱
@@ -30,7 +31,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     approvedSha: task.approved_sha,
     error: task.error,
   };
-  if (!session) return json({ ok: true, task, project, stage: task.stage, session: null, events: [], pending: [], review, notifications, hasMore: false });
+  const pending = await pendingConversation(id, session?.id ?? null);
+  if (!session) return json({ ok: true, task, project, stage: task.stage, session: null, events: [], pending, review, notifications, hasMore: false });
   // 增量轮询：只取游标之后的少量事件。
   // 首次进入或向上翻页：从最新（或 before 之前）倒序取一页，再按 seq 升序返回。
   let events: { seq: number; kind: string; payload: unknown; at: number }[];
@@ -61,11 +63,5 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         .first());
     }
   }
-  const pending = (
-    await db
-      .prepare(`SELECT id, kind, body, option_id AS "optionId", created_at AS "createdAt" FROM inbox WHERE session_id=? AND delivered_at IS NULL ORDER BY id ASC`)
-      .bind(session.id)
-      .all()
-  ).results;
   return json({ ok: true, task, project, stage: task.stage, session, events, pending, review, notifications, hasMore });
 }

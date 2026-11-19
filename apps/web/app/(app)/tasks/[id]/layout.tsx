@@ -1,5 +1,5 @@
 "use client";
-import { Copy, ExternalLink, GitBranch, GitPullRequest } from "lucide-react";
+import { Copy, ExternalLink, GitBranch, GitPullRequest, Undo2 } from "lucide-react";
 import Link from "next/link";
 import { use, useMemo, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button.tsx";
@@ -16,7 +16,7 @@ import { TaskProvider } from "@/components/task/task-context.tsx";
 import { useToast } from "@/components/ui/toast.tsx";
 import { shortSha, timeAgo } from "@/lib/format.ts";
 import { fold } from "@/lib/session-fold.ts";
-import { canCancel, EFFORT_LABEL, isFinished, SESSION_STATE_LABEL, stageInfo } from "@/lib/status.ts";
+import { canCancel, EFFORT_LABEL, isFinished, previousTaskStage, SESSION_STATE_LABEL, stageInfo } from "@/lib/status.ts";
 import { useSession } from "@/lib/use-session.ts";
 import type { MachineItem } from "@/lib/types.ts";
 import { AgentName } from "@/components/agent/agent-icon.tsx";
@@ -37,6 +37,8 @@ export default function TaskLayout({ children, params }: { children: ReactNode; 
   const toast = useToast();
   const [cancelling, setCancelling] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
+  const [rewinding, setRewinding] = useState(false);
+  const [rewindBusy, setRewindBusy] = useState(false);
   const folded = useMemo(() => fold(data?.events ?? []), [data?.events]);
   const diffs = folded.items.filter((i): i is Extract<typeof i, { type: "diff" }> => i.type === "diff");
   const checks = folded.items.filter((i): i is Extract<typeof i, { type: "check" }> => i.type === "check");
@@ -71,6 +73,14 @@ export default function TaskLayout({ children, params }: { children: ReactNode; 
   const { task, project } = data;
   const info = stageInfo(task.stage);
   const closed = isFinished(task.stage);
+  const returnTo = previousTaskStage(task.stage, !!task.merge_sha, !!task.head_sha);
+  const returnLabel = returnTo === "reviewing" ? "审核" : "开发";
+  const rewindQueued = data.pending.some((item) => item.kind === "rewind");
+  const rewindDescription = task.stage === "publishing"
+    ? "当前发布结束后回到审核。已经执行的发布操作会保留。"
+    : returnTo === "reviewing"
+      ? (task.merge_sha ? "保留已合并的代码。回到审核后可以重试发布，也可以发消息继续改代码。" : "撤回当前发布批准，提交会重新等待审核。")
+      : "保留原会话。回到开发后，发消息让智能体继续处理。";
 
   return (
     <TaskProvider value={{ data, diffs, checks, activity, reload, hasMore, loadingOlder, loadOlder }}>
@@ -176,9 +186,34 @@ export default function TaskLayout({ children, params }: { children: ReactNode; 
         <span className="num text-xs text-ink-3">创建于 {timeAgo(task.created_at)}</span>
       </div>
 
-      <Card className="mb-6 px-5 py-4">
-        <Pipeline stage={task.stage} attention={info.tone === "review" || info.tone === "warn"} />
+      <Card className="mb-6 flex flex-wrap items-center gap-x-5 gap-y-3 px-5 py-4">
+        <div className="min-w-0 flex-1 basis-72">
+          <Pipeline stage={task.stage} attention={info.tone === "review" || info.tone === "warn"} />
+        </div>
+        {returnTo && <Button size="sm" variant="ghost" disabled={rewindQueued} onClick={() => setRewinding(true)}>
+          <Undo2 className="size-4" aria-hidden /> {rewindQueued ? "发布结束后回退" : `回退到${returnLabel}`}
+        </Button>}
       </Card>
+
+      <Dialog open={rewinding && !!returnTo} onOpenChange={setRewinding} title={`回退到${returnLabel}？`} description={rewindDescription}>
+        <div className="flex justify-end gap-2">
+          <Button onClick={() => setRewinding(false)}>取消</Button>
+          <Button variant="primary" loading={rewindBusy} onClick={async () => {
+            setRewindBusy(true);
+            try {
+              const result = await apiPost<{ deferred: boolean }>(`/api/tasks/${id}/rewind`, { target: returnTo });
+              setRewinding(false);
+              mutate("/api/tasks");
+              reload();
+              toast("ok", result.deferred ? "发布结束后回退到审核" : `已回退到${returnLabel}`);
+            } catch (e) {
+              toast("error", e instanceof ApiError ? e.message : "回退失败");
+            } finally {
+              setRewindBusy(false);
+            }
+          }}>确认回退</Button>
+        </div>
+      </Dialog>
 
       <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         <Card className="min-w-0 px-4 pb-4 pt-1">
