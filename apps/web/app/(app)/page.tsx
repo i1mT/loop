@@ -1,20 +1,18 @@
 "use client";
 import clsx from "clsx";
-import { Archive, ArchiveRestore, GitPullRequest, ListChecks, Plus, Search } from "lucide-react";
-import Link from "next/link";
+import { Archive, ArchiveRestore, ListChecks, Plus, Search } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Chip, StatusPill } from "@/components/ui/badge.tsx";
+import { TaskActivity } from "@/components/task-list/task-activity.tsx";
+import { TaskListRow } from "@/components/task-list/task-list-row.tsx";
 import { Button, LinkButton } from "@/components/ui/button.tsx";
 import { Input, Select } from "@/components/ui/field.tsx";
 import { Card, PageHeader } from "@/components/ui/page-header.tsx";
 import { EmptyState, ErrorState, RowsSkeleton } from "@/components/ui/states.tsx";
 import { useToast } from "@/components/ui/toast.tsx";
 import { ApiError, apiPost, mutate, useApi } from "@/lib/client-api.ts";
-import { timeAgo } from "@/lib/format.ts";
-import { canArchive, GROUP_LABEL, GROUP_ORDER, taskStageInfo, type Group } from "@/lib/status.ts";
+import { canArchive, GROUP_LABEL, GROUP_ORDER, isTaskExecuting, taskStageInfo, type Group } from "@/lib/status.ts";
 import type { GlobalPool, TaskItem } from "@/lib/types.ts";
 import { PoolPanel } from "@/components/project/pool-panel.tsx";
-import { AgentName } from "@/components/agent/agent-icon.tsx";
 
 /** pool：等待合并的小反馈（还不是任务），与任务列表互斥显示 */
 type Filter = "all" | Group | "pool";
@@ -190,62 +188,42 @@ export default function TasksPage() {
         ) : shown.length === 0 ? (
           <EmptyState title="没有匹配的任务">换一个状态或清空搜索条件试试。</EmptyState>
         ) : (
-          <ul className="divide-y divide-line">
-            {shown
-              .slice()
-              .sort((a, b) => GROUP_ORDER.indexOf(taskStageInfo(a).group) - GROUP_ORDER.indexOf(taskStageInfo(b).group) || b.updated_at - a.updated_at)
-              .map((t) => {
-                const info = taskStageInfo(t);
-                return (
-                  <li key={t.id} className="flex items-center hover:bg-canvas/60">
-                    <label className="flex w-10 shrink-0 cursor-pointer items-center justify-center self-stretch">
-                      <input
-                        type="checkbox"
-                        aria-label={`选择：${t.title}`}
-                        disabled={!archivedView && !canArchive(t.stage)}
-                        title={archivedView || canArchive(t.stage) ? undefined : "只有已结束的任务可以归档"}
-                        checked={picked.has(t.id)}
-                        onChange={(e) =>
-                          setPicked((s) => {
-                            const n = new Set(s);
-                            if (e.target.checked) n.add(t.id);
-                            else n.delete(t.id);
-                            return n;
-                          })
-                        }
-                        className="size-4 cursor-pointer accent-ink disabled:cursor-not-allowed disabled:opacity-30"
-                      />
-                    </label>
-                    <Link href={`/tasks/${t.id}`} className="group grid min-w-0 flex-1 grid-cols-[1fr_auto] items-center gap-x-4 gap-y-1.5 py-3 pr-4 transition-colors sm:grid-cols-[88px_minmax(0,1fr)_84px]">
-                      <div>
-                        <StatusPill tone={info.tone} pulse>
-                          {info.label}
-                        </StatusPill>
-                      </div>
-                      <time className="num col-start-2 text-right text-xs text-ink-3 sm:col-start-3 sm:row-start-1" dateTime={new Date(t.updated_at).toISOString()}>
-                        {timeAgo(t.updated_at)}
-                      </time>
-                      <div className="col-span-2 min-w-0 sm:col-span-1 sm:col-start-2 sm:row-start-1">
-                        <div className="truncate font-medium group-hover:underline group-hover:underline-offset-2">{t.title}</div>
-                        <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-ink-2">
-                          <span className="truncate">
-                            {t.project_name} · <AgentName kind={t.agent} size={14} />
-                            {t.machine_id ? ` @ ${t.machine_id}` : ""}
-                            {t.error && <span className="text-bad"> · {t.error}</span>}
-                          </span>
-                          {t.pr_number && (
-                            <Chip title={t.branch ?? undefined} className="shrink-0">
-                              <GitPullRequest className="size-3" aria-hidden />
-                              <span className="num">#{t.pr_number}</span>
-                            </Chip>
-                          )}
-                        </div>
-                      </div>
-                    </Link>
-                  </li>
-                );
-              })}
-          </ul>
+          <>
+            {!archivedView && <TaskActivity tasks={shown} />}
+            <ul className="divide-y divide-line">
+              {shown
+                .slice()
+                .sort((a, b) => {
+                  const groupOrder = GROUP_ORDER.indexOf(taskStageInfo(a).group) - GROUP_ORDER.indexOf(taskStageInfo(b).group);
+                  return groupOrder || Number(isTaskExecuting(b)) - Number(isTaskExecuting(a)) || b.updated_at - a.updated_at;
+                })
+                .map((t) => {
+                  return (
+                    <li key={t.id} className="flex items-center hover:bg-canvas/60">
+                      <label className="flex w-10 shrink-0 cursor-pointer items-center justify-center self-stretch">
+                        <input
+                          type="checkbox"
+                          aria-label={`选择：${t.title}`}
+                          disabled={!archivedView && !canArchive(t.stage)}
+                          title={archivedView || canArchive(t.stage) ? undefined : "只有已结束的任务可以归档"}
+                          checked={picked.has(t.id)}
+                          onChange={(e) =>
+                            setPicked((s) => {
+                              const n = new Set(s);
+                              if (e.target.checked) n.add(t.id);
+                              else n.delete(t.id);
+                              return n;
+                            })
+                          }
+                          className="size-4 cursor-pointer accent-ink disabled:cursor-not-allowed disabled:opacity-30"
+                        />
+                      </label>
+                      <TaskListRow task={t} showProject />
+                    </li>
+                  );
+                })}
+            </ul>
+          </>
         )}
       </Card>
       {error && data && <p className="mt-2 text-xs text-bad">刷新失败（{error.message}），正在显示上次的数据。</p>}

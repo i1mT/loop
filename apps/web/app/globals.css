@@ -69,9 +69,27 @@ select:focus-visible,
   font-variant-numeric: tabular-nums;
 }
 
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+@keyframes task-activity-beat {
+  0%, 100% { transform: scaleY(0.4); }
+  45% { transform: scaleY(1); }
+}
+@keyframes task-status-turn {
+  0%, 65% { transform: rotate(0); }
+  90%, 100% { transform: rotate(180deg); }
+}
+@keyframes task-status-pulse {
+  50% { opacity: 0.55; transform: scale(0.9); }
+}
+@keyframes task-status-lift {
+  45% { transform: translateY(-2px); }
+}
+@keyframes task-status-rock {
+  25% { transform: rotate(-16deg); }
+  75% { transform: rotate(16deg); }
+}
+@keyframes task-status-scan {
+  25% { transform: translateX(1.5px); }
+  75% { transform: translateX(-1.5px); }
 }
 @keyframes shimmer {
   0% { background-position: -200% 0; }
@@ -88,10 +106,17 @@ select:focus-visible,
   border-radius: 6px;
 }
 .rise { animation: rise 160ms ease-out both; }
-.live-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: no-preference) {
+  .task-status-icon[data-motion="turn"] { animation: task-status-turn 2.8s ease-in-out infinite; }
+  .task-status-icon[data-motion="pulse"] { animation: task-status-pulse 1.55s ease-in-out infinite; }
+  .task-status-icon[data-motion="lift"] { animation: task-status-lift 1.4s ease-in-out infinite; }
+  .task-status-icon[data-motion="rock"] { animation: task-status-rock 1.8s ease-in-out infinite; }
+  .task-status-icon[data-motion="scan"] { animation: task-status-scan 1.6s ease-in-out infinite; }
+  .task-status-icon[data-motion="spin"] { animation: var(--animate-spin); }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .skeleton, .rise, .live-dot { animation: none; }
+  .skeleton, .rise { animation: none; }
   * { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
 }
 

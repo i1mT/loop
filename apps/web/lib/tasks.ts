@@ -393,13 +393,21 @@ export async function createTask(
   return created;
 }
 
+type ListedTask = TaskRow & {
+  project_name: string;
+  machine_name: string | null;
+  lease_active: boolean;
+  plan_phase: string | null;
+  feedback_count: number;
+};
+
 /** archived：false 只列未归档（默认），true 只列已归档 */
 export async function listTasks(
   limit = 100,
   archived = false,
   spaceId?: string,
   userId?: string | null,
-): Promise<(TaskRow & { project_name: string; feedback_count: number })[]> {
+): Promise<ListedTask[]> {
   if(userId===null)return [];
   const db = await getDb();
   const space = spaceId ? " AND p.space_id=?" : "";
@@ -407,10 +415,16 @@ export async function listTasks(
   return (
     await db
       .prepare(
-        `SELECT t.*, p.name AS project_name, (SELECT COUNT(*) FROM feedbacks f WHERE f.task_id = t.id)::int AS feedback_count FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.archived_at IS ${archived ? "NOT NULL" : "NULL"}${space}${access} ORDER BY t.created_at DESC LIMIT ?`,
+        `SELECT t.*, p.name AS project_name, m.name AS machine_name, plan.phase AS plan_phase,
+           EXISTS (SELECT 1 FROM leases l WHERE l.task_id=t.id AND l.daemon_id=t.machine_id AND l.released=0 AND l.expires_at>?) AS lease_active,
+           (SELECT COUNT(*) FROM feedbacks f WHERE f.task_id=t.id)::int AS feedback_count
+         FROM tasks t JOIN projects p ON p.id=t.project_id
+         LEFT JOIN machines m ON m.id=t.machine_id
+         LEFT JOIN task_plan_rounds plan ON plan.task_id=t.id AND plan.round=t.round
+         WHERE t.archived_at IS ${archived ? "NOT NULL" : "NULL"}${space}${access} ORDER BY t.created_at DESC LIMIT ?`,
       )
-      .bind(...(spaceId ? [spaceId] : []), ...(userId !== undefined ? [userId] : []), limit)
-      .all<TaskRow & { project_name: string; feedback_count: number }>()
+      .bind(now(), ...(spaceId ? [spaceId] : []), ...(userId !== undefined ? [userId] : []), limit)
+      .all<ListedTask>()
   ).results;
 }
 

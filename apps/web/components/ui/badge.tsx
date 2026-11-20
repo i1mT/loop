@@ -11,12 +11,12 @@ const TONES: Record<Tone, { pill: string; dot: string }> = {
   warn: { pill: "bg-warn-soft text-warn", dot: "bg-warn" },
 };
 
-/** 状态胶囊：点 + 文字（颜色不是唯一信息通道）。只有“正在发生”的状态才会呼吸。 */
-export function StatusPill({ tone, children, pulse }: { tone: Tone; children: ReactNode; pulse?: boolean }) {
+/** 状态胶囊可用图标替换默认圆点。 */
+export function StatusPill({ tone, children, icon }: { tone: Tone; children: ReactNode; icon?: ReactNode }) {
   const t = TONES[tone];
   return (
     <span className={clsx("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium leading-5 whitespace-nowrap", t.pill)}>
-      <span className={clsx("size-1.5 rounded-full", t.dot, pulse && tone === "live" && "live-dot")} aria-hidden />
+      {icon ?? <span className={clsx("size-1.5 rounded-full", t.dot)} aria-hidden />}
       {children}
     </span>
   );

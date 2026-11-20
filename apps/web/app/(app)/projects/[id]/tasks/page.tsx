@@ -8,7 +8,7 @@ export default function ProjectTasks() {
   return (
     <>
       <PoolBar projectId={project.id} />
-      <TaskRows tasks={tasks} loading={tasksLoading} emptyHint="点右上角“新建任务”，智能体会在独立分支上完成并提交 PR。" />
+      <TaskRows showActivity tasks={tasks} loading={tasksLoading} emptyHint="点右上角“新建任务”，智能体会在独立分支上完成并提交 PR。" />
     </>
   );
 }

@@ -96,6 +96,25 @@ export function taskStageInfo(task: { stage: string; merge_sha?: string | null; 
   return stageInfo(task.stage);
 }
 
+type ListedTaskStatus = Parameters<typeof taskStageInfo>[0] & { lease_active?: boolean; plan_phase?: string | null };
+
+/** “进行中”包括排队。只有执行阶段且机器仍持有租约时，才算正在执行。 */
+export function isTaskExecuting(task: ListedTaskStatus): boolean {
+  return task.lease_active === true && taskStageInfo(task).tone === "live";
+}
+
+export function listedTaskStageInfo(task: ListedTaskStatus): StageInfo {
+  const info = taskStageInfo(task);
+  if (info.tone !== "live") return info;
+  if (task.lease_active === false) {
+    return { ...info, tone: "idle", label: task.stage === "running" ? "等待机器接手" : info.label, hint: "等待执行机器接手" };
+  }
+  if (task.stage === "running" && task.plan_phase) {
+    return { ...info, label: PLAN_PHASE_LABEL[task.plan_phase] ?? info.label };
+  }
+  return info;
+}
+
 export interface TaskProgress {
   info: StageInfo;
   step: { index: number; closed: boolean };

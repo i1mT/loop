@@ -31,6 +31,10 @@ export interface TaskItem {
   updated_at: number;
   /** 这个任务由几条反馈合成（列表接口才带；1 表示普通任务） */
   feedback_count?: number;
+  /** 任务列表附带的当前执行信息。 */
+  machine_name?: string | null;
+  lease_active?: boolean;
+  plan_phase?: string | null;
 }
 
 /** 一条反馈：提交者的原始内容；多条反馈可以合成一个任务 */
