@@ -11,6 +11,24 @@ export interface DeliveryStep {
   repair?: string;
 }
 
+export interface EnvironmentTestResult {
+  verdict: "passed" | "failed" | "blocked" | "unclear";
+  output: string;
+}
+
+export function parseEnvironmentTest(reply: string): EnvironmentTestResult {
+  const lines = reply.trim().split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    const match = /^(?:>\s*)?(?:[-•]\s+)?[*_`]*测试结果[*_`]*\s*[:：]\s*[*_`]*(通过|失败|受阻)[*_`]*\s*(?:[。.!！]|[（(](.*)[）)])?[*_`]*$/.exec(line);
+    if (!match) continue;
+    const [, result, detail] = match;
+    const output = [...lines.slice(0, i), ...lines.slice(i + 1), detail].filter(Boolean).join("\n").trim();
+    return { verdict: result === "通过" ? "passed" : result === "失败" ? "failed" : "blocked", output: output || `测试结果：${result}` };
+  }
+  return { verdict: "unclear", output: reply.trim() };
+}
+
 interface DeliveryContext {
   stage: DeliveryStage;
   state: DeliveryState;
@@ -22,7 +40,7 @@ interface DeliveryContext {
   prNumber: number | null;
   head: string | null;
   candidates: () => Promise<{ id: string; round: number; title: string; sha: string }[]>;
-  test: (prompt: string) => Promise<{ passed: boolean; output: string }>;
+  test: (prompt: string) => Promise<EnvironmentTestResult>;
   check: () => Promise<void>;
   active: () => boolean;
 }
@@ -90,10 +108,15 @@ export async function advanceDelivery(ctx: DeliveryContext): Promise<DeliverySte
     if (!ctx.active()) throw new Error("任务租约已失效");
     const result = await ctx.test(environmentPrompt(preview, environment, sha));
     if (await moved()) return step(preview ? "preview_deploy" : "production_deploy", preview ? { previewResult: result.output } : { productionResult: result.output });
-    const data = preview ? { previewResult: result.output, previewPassed: result.passed } : { productionResult: result.output };
-    if (!result.passed) {
-      if (preview && result.output) return step("running", { ...data, previewMerge: null }, { repair: `预览测试失败。请基于最新 dev 修复并完成项目检查，再提交改动。\n${result.output}` });
-      return step(stage, data, { error: result.output || "智能体没有返回明确的测试通过结果" });
+    const data = preview ? { previewResult: result.output, previewPassed: result.verdict === "passed" } : { productionResult: result.output };
+    if (result.verdict === "failed" && preview) {
+      return step("running", { ...data, previewMerge: null, previewRun: null }, {
+        repair: `预览测试失败。请基于最新 dev 修复下列问题，完成项目检查后提交。Loop 会重新合入 dev、部署和测试。\n\n${result.output}`,
+      });
+    }
+    if (result.verdict !== "passed") {
+      const reason = result.verdict === "unclear" ? "智能体未能确认测试结论。请查看会话后重试。" : result.output;
+      return step(stage, data, { error: reason });
     }
     return step(preview ? "production_review" : "published", data);
   }
@@ -155,6 +178,6 @@ function environmentPrompt(preview: boolean, env: TestEnvironment, sha: string) 
   return [
     `${preview ? "预览" : "生产"}环境流水线已成功，版本 ${sha}。请按 AGENTS.md 和项目文档执行${preview ? "预览测试" : "生产回归测试"}。本轮只测试，修复、提交和发布由后续流程处理。`,
     JSON.stringify({ url: env.url, username: env.username, password: env.password }),
-    "说明测试步骤和结果，最后一行写「测试结果：通过」或「测试结果：失败」。无法完成测试时也要说明具体原因。",
+    "说明测试步骤和结果，最后一行写「测试结果：通过」「测试结果：失败」或「测试结果：受阻」。代码问题写失败，并说明如何复现和建议的修复。确实无法完成测试时写受阻，并说明需要什么才能继续。"
   ].join("\n\n");
 }

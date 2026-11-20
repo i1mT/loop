@@ -1,4 +1,6 @@
 import { getEnv } from "./env.ts";
+import type { LocalConfig } from "./local-mode.ts";
+import { upstreamUrl } from "./upstream.ts";
 
 /**
  * 校验后台通知使用的公开地址。
@@ -17,6 +19,31 @@ export function publicOrigin(value: string): string {
     throw new Error("LOOP_PUBLIC_URL 需要填写 http(s) 网关地址");
   }
   return url.origin;
+}
+
+/** 兼容尚未配置公开地址的网关。 */
+export function configuredPublicOrigin(): string | null {
+  try {
+    return publicOrigin(getEnv().LOOP_PUBLIC_URL);
+  } catch {
+    return null;
+  }
+}
+
+export async function upstreamPublicOrigin(local: Pick<LocalConfig, "upstream" | "upstreamToken">): Promise<string> {
+  const fallback = local.upstream.replace(/\/+$/, "");
+  try {
+    const response = await fetch(upstreamUrl(local.upstream, "/api/status", ""), {
+      headers: { authorization: `Bearer ${local.upstreamToken}` },
+      redirect: "manual",
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) return fallback;
+    const status = await response.json() as { base?: string; mode?: string };
+    return status.mode === "cloud" && status.base ? publicOrigin(status.base) : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 /**

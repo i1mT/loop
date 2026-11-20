@@ -44,6 +44,9 @@ for (const target of targets) {
   const stage=join(out,`stage-${target}`);
   rmSync(stage,{recursive:true,force:true});
   run('pnpm',['--filter','@loop/daemon','--prod','deploy','--legacy',`--os=${os}`,`--cpu=${cpu}`,stage]);
+  const metadata = JSON.parse(readFileSync(join(stage,'package.json'),'utf8'));
+  writeFileSync(join(stage,'package.json'),JSON.stringify({...metadata,loopRelease:version})+'\n');
+  cpSync(join(root,'apps/web/public/install.sh'),join(stage,'install.sh'));
   prune(join(stage,'dist'));
   portableBins(join(stage,'node_modules'));
   rmSync(join(stage,'pnpm-lock.yaml'),{force:true});

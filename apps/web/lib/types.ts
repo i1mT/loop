@@ -1,5 +1,5 @@
 // 前端使用的接口返回形状（与 /api/* 一致）
-import type { DeliverySettings, Stage } from "@loop/core";
+import type { DaemonCapability, DeliverySettings, Stage } from "@loop/core";
 
 export interface TaskItem {
   id: string;
@@ -93,6 +93,8 @@ export interface MachineItem {
   owned: boolean;
   shared: boolean;
   legacyAuth: boolean;
+  missingCapabilities?: DaemonCapability[];
+  updateVersion?: string | null;
   id: string;
   name: string;
   os: string | null;

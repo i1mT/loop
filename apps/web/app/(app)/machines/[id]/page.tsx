@@ -1,5 +1,6 @@
 "use client";
 import { projectHasMachine, projectBindings } from "@/lib/routing/view.ts";
+import { DaemonUpdatePanel } from "@/components/machine/daemon-update-panel.tsx";
 import { MachineAccessPanel } from "@/components/machine/access-panel.tsx";
 import clsx from "clsx";
 import { Check, ChevronRight, X } from "lucide-react";
@@ -70,6 +71,7 @@ export default function MachinePage({ params }: { params: Promise<{ id: string }
         }
       />
 
+      <DaemonUpdatePanel machine={m} />
       <MachineAccessPanel machine={m} />
       <h2 className="mb-2 text-[15px] font-semibold">智能体</h2>
       <Card className="mb-6 overflow-hidden">

@@ -6,7 +6,8 @@ import { migrate } from "./migrations.ts";
 import { useDb } from "./db.ts";
 import { deleteMachine, hello, listMachines, pendingProbes, requestProbe, setAgentConfig, validateBinding } from "./machines.ts";
 import { createProject, createTask, getTask, setStage, listProjects, listTasks, restartTask, setProjectArchived, setTaskArchived, updateProject, updateTask } from "./tasks.ts";
-import { claim, completePublish, approveTask, reportHead, confirmPublish, ingestEvents, overrideOutcome, republishTask, restoreTask } from "./daemon-api.ts";
+import { RECOMMENDED_DAEMON_VERSION } from "./daemon-compatibility.ts";
+import { claim, heartbeat, completePublish, approveTask, reportHead, confirmPublish, ingestEvents, overrideOutcome, republishTask, restoreTask } from "./daemon-api.ts";
 import { randomUUID } from "node:crypto";
 import { authenticateApiKey, createApiKey, ensureSdkSource, getSourceByKey, listApiKeys, rateLimited, revokeApiKey, rotateSdkSecret, updateSdkSource } from "./integrations.ts";
 
@@ -49,6 +50,24 @@ test("hello 注册机器并上报智能体；列表里在线", { skip }, async (
   assert.equal(a.name, "家里的电脑");
   assert.equal(a.online, true);
   assert.deepEqual(a.agents.map((x) => [x.kind, x.installed, x.acp]), [["claude", false, false], ["codex", true, false], ["grok", true, true]]);
+});
+
+test("无任务时也能发现旧版 daemon，升级后心跳更新页面版本", { skip }, async () => {
+  const d = await setup();
+  const machine = async () => (await listMachines(d)).find((m) => m.id === A)!;
+  await hello(d, { machineId: A, name: "家里的电脑", version: "0.3.1", agents });
+  assert.equal(await claim(A, [], true, true), null);
+  assert.equal((await machine()).updateVersion, RECOMMENDED_DAEMON_VERSION);
+  assert.deepEqual((await machine()).missingCapabilities, []);
+  assert.equal(await claim(A, [], true, true, [], `${RECOMMENDED_DAEMON_VERSION}-abcdef1`), null);
+  assert.equal((await machine()).updateVersion, null);
+  const project = await createProject({ name: "版本心跳", machineId: A, agent: "grok", githubRepo: "example/heartbeat" });
+  const task = await createTask({ projectId: project.id, title: "心跳任务" });
+  const lease = (await claim(A))!;
+  assert.equal(lease.task.id, task.id);
+  assert.equal((await heartbeat(lease.leaseId, A, RECOMMENDED_DAEMON_VERSION)).ok, true);
+  assert.equal((await machine()).version, RECOMMENDED_DAEMON_VERSION);
+  await setStage(task.id, "cancelled");
 });
 
 test("绑定校验：机器不存在、未安装、不能驱动都被拒绝；合法通过", { skip }, async () => {

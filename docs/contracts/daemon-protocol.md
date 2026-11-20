@@ -97,3 +97,9 @@
 声明 `capabilities.delivery=true` 的守护进程可接收新交付轮次。开发使用 `mainRef=dev`。`job=delivery` 返回当前节点、持久进度和项目环境配置。
 
 `POST /api/daemon/leases/:id/delivery` 接受 `daemonId`、`round`、`stage`、`next`、`state` 以及可选失败原因、重试间隔和修复消息。网关校验当前轮次和租约，保存进度并结清本步租约。`{daemonId,candidates:true}` 返回当前项目待归入生产 PR/MR 的任务和预览合并提交，daemon 依据 Git 历史判断包含关系。
+
+### daemon 兼容性
+
+daemon 启动时通过 `hello` 上报版本，空闲时随领取请求、工作时随租约心跳继续上报。网关在领取响应中返回推荐版本，取自该次网关构建使用的 `apps/daemon/package.json`。机器列表和详情对低于推荐版本的机器显示更新提示，版本比较使用主、次和修订号。旧版仅通过 `hello` 上报的版本同样生效。
+
+网关记录领取请求上报的 `capabilities`。新功能如果需要新版 daemon，在 `packages/core/src/daemon-capabilities.ts` 声明能力，并在 `apps/web/lib/daemon-compatibility.ts` 添加任务和项目的要求。任务等待更新时保留原机器绑定，新任务优先选择兼容的机器。发布 daemon 改动时更新包版本号，并同步产出、上传新安装包。

@@ -234,6 +234,7 @@ export const MIGRATIONS: string[][] = [
       round INTEGER NOT NULL, repo TEXT NOT NULL, state JSONB NOT NULL DEFAULT '{}',
       next_at BIGINT NOT NULL DEFAULT 0, PRIMARY KEY(task_id,round))`,
   ],
+  [`ALTER TABLE machines ADD COLUMN IF NOT EXISTS capabilities JSONB`],
 ];
 
 

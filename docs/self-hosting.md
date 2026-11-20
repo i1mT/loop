@@ -36,7 +36,7 @@ daemon 只通过 HTTP 访问网关，不连接数据库，也不读取数据库�
 | 配置 | 用途 |
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL 连接串 |
-| `LOOP_PUBLIC_URL` | 对外 HTTPS 根地址，用于后台通知里的链接 |
+| `LOOP_PUBLIC_URL` | 对外访问根地址，供飞书通知、任务 PR/MR 的回链和机器接入命令使用 |
 | `BETTER_AUTH_SECRET` | 会话签名密钥 |
 | `LOOP_ADMIN_TOKEN` | 脚本调用管理 API 的 Bearer 令牌，不能登录页面 |
 | `FEISHU_ENCRYPTION_KEY` | 飞书凭证加密主密钥；留空则不启用飞书 |

@@ -47,7 +47,12 @@ async function runPrompt(sessionId: string, text: string, client: Client): Promi
       return { stopReason: "end_turn" };
     }
     if (text.includes("环境流水线已成功") && text.includes("fixture password")) {
-      await say(client, sessionId, "已执行环境测试。\n测试结果：通过");
+      const output = process.env.FAKE_PREVIEW_FAILURE ? "已执行环境测试，预览字号仍不正确。" : "已执行环境测试。\n测试结果：通过";
+      await say(client, sessionId, output);
+      return { stopReason: "end_turn" };
+    }
+    if (process.env.FAKE_PREVIEW_FAILURE && text.includes("根据刚完成的测试报告补充结论")) {
+      await say(client, sessionId, "测试结果:失败");
       return { stopReason: "end_turn" };
     }
   }

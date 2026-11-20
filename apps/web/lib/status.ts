@@ -103,7 +103,7 @@ export interface TaskProgress {
 }
 
 export function taskProgress(
-  task: { stage: Stage; merge_sha?: string | null; merged_at?: number | null; error: string | null },
+  task: { stage: Stage; approved_sha?: string | null; merge_sha?: string | null; merged_at?: number | null; error: string | null },
   session: { state: string; updated_at?: number } | null,
   leaseActive: boolean,
   delivery?: { planPhase: string | null },
@@ -111,8 +111,8 @@ export function taskProgress(
   let info = taskStageInfo(task);
   let step = pipelinePosition(task.stage);
   let activity: TaskProgress["activity"] = null;
-  if (isLegacyPublishTimeout(task) || (task.stage === "failed" && task.merge_sha)) {
-    step = pipelinePosition("publishing");
+  if (task.stage === "failed" && !delivery) {
+    step = pipelinePosition(task.merge_sha || task.approved_sha ? "publishing" : "running");
   }
   if (task.stage === "publishing") {
     const running = leaseActive && session?.state === "running" &&
@@ -129,7 +129,8 @@ export function taskProgress(
     activity = { label: "等待你的回复", spinning: false, waiting: true };
   }
   if (delivery) {
-    step = deliveryPosition(task.stage, delivery.planPhase);
+    const stepStage = task.stage === "failed" ? "running" : task.stage;
+    step = deliveryPosition(stepStage, delivery.planPhase);
     if (task.stage === "running" && step.index === 1 && leaseActive) {
       info = { ...info, label: PLAN_PHASE_LABEL[delivery.planPhase ?? "analyzing"] ?? "技术方案" };
     }
@@ -146,7 +147,7 @@ export const GROUP_LABEL: Record<Group, string> = {
 };
 export const GROUP_ORDER: Group[] = ["attention", "review", "active", "done", "closed"];
 
-export const DELIVERY_PIPELINE = ["排队", "技术方案", "开发", "合并 dev 部署预览环境", "在预览环境测试", "发布生产", "生产环境回归测试"] as const;
+export const DELIVERY_PIPELINE = ["排队", "方案", "开发", "预览部署", "预览测试", "生产发布", "生产回归"] as const;
 
 export function deliveryPosition(stage: Stage, planPhase: string | null): TaskProgress["step"] {
   switch (stage) {

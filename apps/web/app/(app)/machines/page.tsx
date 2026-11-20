@@ -82,6 +82,7 @@ export default function MachinesPage() {
                     {m.version ? ` · loopd ${m.version}` : ""}
                   </p>
                 </div>
+                {(m.updateVersion || !!m.missingCapabilities?.length) && <Chip className="border-warn/30 text-warn">需更新</Chip>}
                 <Chip className={m.online ? "border-ok/30 text-ok" : ""}>{m.online ? "在线" : `离线 · ${timeAgo(m.lastSeen)}`}</Chip>
               </div>
               <ul className="mt-4 grid gap-1.5">

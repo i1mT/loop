@@ -1,0 +1,50 @@
+import assert from "node:assert/strict";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { test } from "node:test";
+import { portableUpdater, releaseToInstall } from "./connection/update.ts";
+import { tempDir } from "./testing/fixtures.ts";
+
+const current = "0.4.0-old";
+const next = "0.4.1-new";
+
+test("空闲更新先准备安装包，启动失败后恢复旧版及原数据目录", async (t) => {
+  assert.ok(releaseToInstall(current, "0.4.0-rebuild"));
+  assert.ok(!releaseToInstall(current, current));
+  assert.ok(!releaseToInstall(current, "0.3.9-old"));
+  const directory = tempDir("loop-update-");
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const home = join(directory, "fake home");
+  const dataDir = join(directory, "machine data");
+  mkdirSync(dataDir, { recursive: true });
+  const launcher = join(home, ".local/bin/loopd");
+  const binary = (version: string) => join(home, ".local/share/loop/versions", version, "bin/loopd");
+  const executable = (file: string, source: string) => {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, source, { mode: 0o700 });
+  };
+  executable(binary(current), '#!/bin/sh\nprintf "old" > "$LOOPD_HOME/started"\n');
+  executable(binary(next), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'loopd ${next}'; exit 0; fi\nexit 1\n`);
+  const previous = `#!/bin/sh\nexec '${binary(current)}' "$@"\n`;
+  executable(launcher, previous);
+  const installer = join(directory, "install.sh");
+  executable(installer, `#!/bin/sh\n[ "$3" = '--prepare' ] && [ "$4" = '${next}' ]\n`);
+  const available = t.mock.method(globalThis, "fetch", async () => new Response(`${next} file sha`));
+  const check = portableUpdater({ gateway: "https://example.com", dataDir, installed: current, home, installer })!;
+  const apply = await check();
+  assert.ok(apply);
+  assert.equal(readFileSync(launcher, "utf8"), previous);
+  await assert.rejects(apply);
+  assert.equal(readFileSync(launcher, "utf8"), previous);
+  assert.equal(readFileSync(join(dataDir, "started"), "utf8"), "old");
+  assert.equal(await check(), null);
+  const newer = "0.4.2-new";
+  available.mock.mockImplementation(async () => new Response(`${newer} file sha`));
+  executable(installer, `#!/bin/sh\n[ "$3" = '--prepare' ] && [ "$4" = '${newer}' ]\n`);
+  executable(binary(newer), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'loopd ${newer}'; exit 0; fi\nprintf "new" > "$LOOPD_HOME/started"\n`);
+  const applyNewer = await check();
+  assert.ok(applyNewer);
+  await applyNewer();
+  assert.ok(readFileSync(launcher, "utf8").includes(newer));
+  assert.equal(readFileSync(join(dataDir, "started"), "utf8"), "new");
+});

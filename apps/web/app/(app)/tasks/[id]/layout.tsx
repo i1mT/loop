@@ -177,6 +177,10 @@ function TaskWorkspace({ id, children }: { id: string; children: ReactNode }) {
         </div>
       </Dialog>
 
+      {data.daemonUpdate && <div role="status" className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-control border border-warn/25 bg-warn-soft px-3 py-2.5 text-[13px]">
+        <p className="text-ink">「{data.daemonUpdate.machineName}」的守护进程需要更新{data.daemonUpdate.version ? `（${data.daemonUpdate.version}）` : ""}。更新并重启后，原机器会继续领取这个任务。</p>
+        <Link href={`/machines/${data.daemonUpdate.machineId}#daemon-update`} className="shrink-0 font-medium text-warn underline underline-offset-2">查看更新方法</Link>
+      </div>}
       {error && <div role="status" className="mb-4 flex shrink-0 items-center justify-between gap-3 rounded-control border border-warn/25 bg-warn-soft px-3 py-2 text-[13px] text-warn">
         <span>暂时无法更新任务，正在显示上次收到的信息。</span>
         <Button variant="ghost" size="sm" onClick={reload}>重新连接</Button>

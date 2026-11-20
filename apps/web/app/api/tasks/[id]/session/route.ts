@@ -1,5 +1,6 @@
 import { requestUserId } from "@/lib/machine-access/request.ts";
 import { fail, json, requireRole } from "@/lib/http.ts";
+import { taskDaemonUpdate } from "@/lib/daemon-compatibility.ts";
 import { getDelivery } from "@/lib/delivery.ts";
 import { getDb } from "@/lib/db.ts";
 import { pendingConversation } from "@/lib/task-conversation.ts";
@@ -20,13 +21,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const before = beforeRaw === null ? null : Number(beforeRaw);
   const limit = Math.min(Math.max(Number(search.get("limit") ?? 120) || 120, 1), 300);
   const db = await getDb();
-  const [session, lease, deliveryRound, plan] = await Promise.all([
+  const [session, lease, deliveryRound, plan, daemonUpdate] = await Promise.all([
     db.prepare(`SELECT id, agent, state, created_at, updated_at FROM sessions WHERE task_id=? ORDER BY created_at DESC LIMIT 1`)
       .bind(id).first<{ id: string; agent: string; state: string; created_at: number; updated_at: number }>(),
     db.prepare(`SELECT 1 FROM leases WHERE task_id=? AND daemon_id=? AND released=0 AND expires_at>? LIMIT 1`)
       .bind(id, task.machine_id, Date.now()).first(),
     getDelivery(db, id, task.round),
     db.prepare(`SELECT phase FROM task_plan_rounds WHERE task_id=? AND round=?`).bind(id, task.round).first<{phase: string}>(),
+    taskDaemonUpdate(db, id),
   ]);
   const leaseActive = !!lease;
   const delivery = deliveryRound ? { state: deliveryRound.state, planPhase: plan?.phase ?? null } : null;
@@ -40,7 +42,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     error: task.error,
   };
   const pending = await pendingConversation(id, session?.id ?? null);
-  if (!session) return json({ ok: true, task, project: projectSummary, delivery, stage: task.stage, leaseActive, session: null, events: [], pending, review, notifications, hasMore: false });
+  if (!session) return json({ ok: true, task, project: projectSummary, delivery, daemonUpdate, stage: task.stage, leaseActive, session: null, events: [], pending, review, notifications, hasMore: false });
   // 增量轮询：只取游标之后的少量事件。
   // 首次进入或向上翻页：从最新（或 before 之前）倒序取一页，再按 seq 升序返回。
   let events: { seq: number; kind: string; payload: unknown; at: number }[];
@@ -71,5 +73,5 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         .first());
     }
   }
-  return json({ ok: true, task, project: projectSummary, delivery, stage: task.stage, leaseActive, session, events, pending, review, notifications, hasMore });
+  return json({ ok: true, task, project: projectSummary, delivery, daemonUpdate, stage: task.stage, leaseActive, session, events, pending, review, notifications, hasMore });
 }

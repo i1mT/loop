@@ -1,4 +1,4 @@
-import type { DeliveryState } from "@loop/core";
+import type { DaemonCapability, DeliveryState } from "@loop/core";
 // 会话事件的纯折叠逻辑（无 React 依赖，便于单元测试）
 
 export interface Ev {
@@ -17,6 +17,7 @@ export interface Pending {
 }
 
 export interface SessionResponse {
+  daemonUpdate?: { machineId: string; machineName: string; version: string | null; missing: DaemonCapability[] } | null;
   delivery?: { state: DeliveryState; planPhase: string | null } | null;
   ok: boolean;
   task: import("./types.ts").TaskItem;

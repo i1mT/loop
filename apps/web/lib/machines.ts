@@ -1,5 +1,7 @@
 // 机器：每台电脑上的守护进程以机器身份注册（hello），上报自己的智能体；项目绑定到"某台机器上的某个智能体"。
 // 函数都显式接收 Db，便于对真实 Postgres 做集成测试。
+import { daemonVersion, type DaemonCapabilities, type DaemonCapability } from "@loop/core";
+import { daemonUpdateVersion, missingDaemonCapabilities } from "./daemon-compatibility.ts";
 import type { Db } from "./pg.ts";
 
 import { now } from "./time.ts";
@@ -57,6 +59,8 @@ export interface MachineView {
   owned: boolean;
   shared: boolean;
   legacyAuth: boolean;
+  missingCapabilities: DaemonCapability[];
+  updateVersion: string | null;
   agents: (DiscoveredAgent & { detectedAt: number; models: Choice[]; efforts: Choice[]; modelsAt: number | null; probePending: boolean; probeError: string | null; defaultModel: string | null; defaultEffort: string | null })[];
 }
 
@@ -69,8 +73,9 @@ export function validMachineId(id: unknown): id is string {
   return typeof id === "string" && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(id);
 }
 
-export async function touchMachine(db: Db, machineId: string): Promise<void> {
-  await db.prepare(`UPDATE machines SET last_seen=? WHERE id=?`).bind(now(), machineId).run();
+export async function touchMachine(db: Db, machineId: string, capabilities?: DaemonCapabilities, version?: string): Promise<void> {
+  await db.prepare(`UPDATE machines SET last_seen=?,capabilities=COALESCE(?::jsonb,capabilities),version=COALESCE(?,version) WHERE id=?`)
+    .bind(now(), capabilities ? JSON.stringify(capabilities) : null, daemonVersion(version), machineId).run();
 }
 
 /** 注册或更新机器，并刷新它的智能体与 Claude 会话列表 */
@@ -79,9 +84,9 @@ export async function hello(db: Db, body: HelloBody): Promise<void> {
   await db
     .prepare(
       `INSERT INTO machines (id, name, os, version, last_seen, created_at) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT (id) DO UPDATE SET name=CASE WHEN machines.owner_user_id IS NULL THEN excluded.name ELSE machines.name END, os=excluded.os, version=excluded.version, last_seen=excluded.last_seen`,
+       ON CONFLICT (id) DO UPDATE SET name=CASE WHEN machines.owner_user_id IS NULL THEN excluded.name ELSE machines.name END, os=excluded.os, version=COALESCE(excluded.version,machines.version), last_seen=excluded.last_seen`,
     )
-    .bind(body.machineId, body.name ?? body.machineId, body.os ?? null, body.version ?? null, t, t)
+    .bind(body.machineId, body.name ?? body.machineId, body.os ?? null, daemonVersion(body.version), t, t)
     .run();
 
   for (const a of body.agents) {
@@ -124,7 +129,7 @@ export async function listMachines(db: Db, spaceId?: string, userId?: string | n
           : `SELECT *, 0 AS shared FROM machines ORDER BY name`,
       )
       .bind(...(userId !== undefined ? [spaceId ?? "", userId] : spaceId ? [spaceId] : []))
-      .all<{ id: string; name: string; os: string | null; version: string | null; last_seen: number; owner_user_id: string | null; shared: number; legacy_auth: number }>()
+      .all<{ id: string; name: string; os: string | null; version: string | null; last_seen: number; owner_user_id: string | null; shared: number; legacy_auth: number; capabilities: DaemonCapabilities | null }>()
   ).results;
   const agents = (await db.prepare(`SELECT machine_id, kind, installed, version, acp, note, detected_at, models, efforts, models_at, probe_requested_at, probe_error, default_model, default_effort FROM machine_agents ORDER BY machine_id, kind`).all<Record<string, unknown>>()).results;
   const t = now();
@@ -139,6 +144,8 @@ export async function listMachines(db: Db, spaceId?: string, userId?: string | n
     owned: !!userId && m.owner_user_id === userId,
     shared: !!m.shared,
     legacyAuth: !!m.legacy_auth,
+    missingCapabilities: missingDaemonCapabilities(m.capabilities),
+    updateVersion: daemonUpdateVersion(m.version),
     agents: agents
       .filter((a) => a.machine_id === m.id)
       .map((a) => ({

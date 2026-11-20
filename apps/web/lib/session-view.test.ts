@@ -18,6 +18,20 @@ test("发布展示区分等待、合并、正在发布、超时待确认和明�
   }
 });
 
+test("任务进度保留失败的位置，并区分执行中和人工确认", () => {
+  const failed = { stage: "failed" as const, error: "执行失败" };
+  const delivery = { planPhase: "implementing" };
+  assert.deepEqual(taskProgress(failed, null, false).step, { index: 1, closed: false });
+  assert.deepEqual(taskProgress({ ...failed, approved_sha: "abcdef1" }, null, false).step, { index: 3, closed: false });
+  assert.deepEqual(taskProgress(failed, null, false, delivery).step, { index: 2, closed: false });
+  const regression = { stage: "production_test" as const, error: null };
+  assert.equal(taskProgress(regression, null, false, delivery).info.tone, "live");
+  const regressionFailed = taskProgress({ ...regression, error: "回归失败" }, null, false, delivery);
+  assert.equal(regressionFailed.info.tone, "bad");
+  assert.deepEqual(regressionFailed.step, { index: 6, closed: false });
+  assert.equal(taskProgress({ stage: "production_review", error: null }, null, false, delivery).info.tone, "review");
+});
+
 const ev = (seq: number, kind: string, payload: Record<string, unknown>): Ev => ({ seq, kind, at: seq, payload });
 
 test("连续的文本块合并为一条消息", () => {

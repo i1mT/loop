@@ -29,6 +29,7 @@ import {
 } from "./status.ts";
 
 import { getDelivery } from "./delivery.ts";
+import { claimCompatibilitySql } from "./daemon-compatibility.ts";
 
 export const LEASE_MS = 60_000;
 
@@ -39,6 +40,8 @@ export async function claim(
   supportsTechnicalPlan = false,
   supportsDelivery = false,
   delivering: string[] = [],
+  version?: string,
+  supportsPreviewRepair = false,
 ): Promise<{
   task: Record<string, unknown>;
   leaseId: string;
@@ -46,13 +49,17 @@ export async function claim(
 } | null> {
   const db = await getDb();
   const t = now();
-  const supported = (supportsTechnicalPlan
-    ? ""
-    : " AND NOT EXISTS (SELECT 1 FROM task_plan_rounds r WHERE r.task_id=t.id AND r.round=t.round)") + (supportsDelivery
+  const capabilities = { technicalPlan: supportsTechnicalPlan, delivery: supportsDelivery };
+  // 新版可重跑因旧版未识别测试结论而停住的预览测试。
+  const legacyPreviewFailure = supportsPreviewRepair
+    ? ` OR (t.stage='preview_test' AND t.error='智能体没有返回明确的测试通过结果' AND d.state->>'previewSha' IS NOT NULL)`
+    : "";
+  const supported = claimCompatibilitySql(capabilities) + (supportsDelivery
     ? ` AND (t.stage NOT IN ('preview_deploy','preview_test','production_review','production_deploy','production_test') OR EXISTS (
-       SELECT 1 FROM task_delivery d WHERE d.task_id=t.id AND d.round=t.round AND d.next_at<=${t} AND (t.error IS NULL OR d.state->>'productionMerge' IS NOT NULL AND t.stage IN ('preview_deploy','preview_test'))))`
-    : " AND NOT EXISTS (SELECT 1 FROM task_delivery d WHERE d.task_id=t.id AND d.round=t.round)");
-  await touchMachine(db, daemonId); // 每次领取都刷新在线状态
+       SELECT 1 FROM task_delivery d WHERE d.task_id=t.id AND d.round=t.round AND d.next_at<=${t}
+         AND (t.error IS NULL OR d.state->>'productionMerge' IS NOT NULL AND t.stage IN ('preview_deploy','preview_test')${legacyPreviewFailure})))`
+    : "");
+  await touchMachine(db, daemonId, capabilities, version);
   await resumeAfterPublish(daemonId);
   const mine = await db
     .prepare(
@@ -196,6 +203,7 @@ export async function claim(
 export async function heartbeat(
   leaseId: string,
   daemonId: string,
+  version?: string,
 ): Promise<
   | { ok: true; expiresAt: number; stage: Stage | null }
   | { ok: false; status: number; error: string }
@@ -217,6 +225,7 @@ export async function heartbeat(
     .prepare(`UPDATE leases SET expires_at=? WHERE id=?`)
     .bind(expiresAt, leaseId)
     .run();
+  if (version) await touchMachine(db, daemonId, undefined, version);
   // 带回任务阶段：被人驳回或取消后，守护进程据此收尾（关闭 PR、清理 worktree、释放租约）
   const t = await db
     .prepare(

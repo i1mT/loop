@@ -2,8 +2,8 @@
 // - 工作：领取任务 → 在本地跑智能体 → 回传事件与当前提交 → 取回人的回复与回答
 // - 发布：领取已批准的任务 → 同步主分支 → 确认仍是审核过的提交 → 以 SHA 执行发布命令 → 回传结果
 // 网关只通过 HTTP 交互（docs/contracts/daemon-protocol.md）；令牌只从环境变量读取，不写入仓库。
-import { advanceDelivery, type DeliveryStep } from "./delivery.ts";
-import { isDeliveryStage, type DeliverySettings, type DeliveryState } from "@loop/core";
+import { advanceDelivery, parseEnvironmentTest, type DeliveryStep } from "./delivery.ts";
+import { DAEMON_CAPABILITIES, compareDaemonVersions, isDeliveryStage, type DeliverySettings, type DeliveryState } from "@loop/core";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -85,6 +85,7 @@ export interface ServeOptions {
   tickMs?: number;
   log?: (msg: string) => void;
   signal?: AbortSignal;
+  update?: () => Promise<(() => Promise<void>) | null>;
 }
 
 interface ActiveSession {
@@ -116,7 +117,7 @@ interface Ctx {
   daemonId: string;
   forge: Forge;
   dataDir: string;
-  gateway: string;
+  publicUrl: string;
   log: (m: string) => void;
   active: Map<string, ActiveSession>;
   publishing: Map<string, PublishLease>;
@@ -198,7 +199,7 @@ type Claim = {
   };
 };
 
-export async function serve(opts: ServeOptions): Promise<void> {
+export async function serve(opts: ServeOptions): Promise<(() => Promise<void>) | undefined> {
   const log =
     opts.log ??
     ((m: string) => console.log(`[loopd ${new Date().toISOString()}] ${m}`));
@@ -214,7 +215,7 @@ export async function serve(opts: ServeOptions): Promise<void> {
     daemonId: opts.daemonId,
     forge: opts.forge ?? new GitHubForge(),
     dataDir: opts.dataDir,
-    gateway: opts.gateway.replace(/\/$/, ""),
+    publicUrl: opts.gateway.replace(/\/+$/, ""),
     log,
     active,
     publishing,
@@ -241,7 +242,7 @@ export async function serve(opts: ServeOptions): Promise<void> {
         .call<{ stage?: string }>(
           "POST",
           `/api/daemon/leases/${a.leaseId}/heartbeat`,
-          { daemonId: opts.daemonId },
+          { daemonId: opts.daemonId, version: LOOPD_VERSION },
         )
         .catch(() => null);
       if (h?.status === 409) markLost(d, sid, a, log);
@@ -282,6 +283,7 @@ export async function serve(opts: ServeOptions): Promise<void> {
       if (p.done || p.lost) continue;
       const reply = await gw.call("POST", `/api/daemon/leases/${p.leaseId}/heartbeat`, {
         daemonId: opts.daemonId,
+        version: LOOPD_VERSION,
       }).catch(() => null);
       const cancelled = p.delivery && reply?.status === 200 && (reply.data as { stage?: string }).stage === "cancelled";
       if ((reply?.status === 409 || cancelled) && p.sessionId && !p.done) {
@@ -293,6 +295,10 @@ export async function serve(opts: ServeOptions): Promise<void> {
   };
   const beatTimer = setInterval(() => void beat(), 15_000);
   opts.signal?.addEventListener("abort", () => clearInterval(beatTimer));
+  let nextUpdateCheck = 0;
+  let checkingUpdate = false;
+  let restart: (() => Promise<void>) | null = null;
+  let lastReportedUpdate: string | undefined;
   let lastDiscovery = 0;
   let startupProbed = false;
   const agentOptions = new Map<string, AgentOptions>();
@@ -359,9 +365,12 @@ export async function serve(opts: ServeOptions): Promise<void> {
           ok: boolean;
           claim: null | Claim;
           probe?: string[];
+          publicUrl?: string | null;
+          recommendedVersion?: string;
         }>("POST", "/api/daemon/claim", {
           daemonId: opts.daemonId,
-          capabilities: { technicalPlan: true, delivery: true },
+          version: LOOPD_VERSION,
+          capabilities: { ...DAEMON_CAPABILITIES, previewRepair: true },
           delivering: [...publishing.values()].filter((p) => !p.done).map((p) => p.taskId),
           holding: [
             ...[...active.values()].filter((a) => !a.lost).map((a) => a.taskId),
@@ -370,6 +379,14 @@ export async function serve(opts: ServeOptions): Promise<void> {
               .map((p) => p.taskId),
           ],
         });
+        if (r.status === 200 && r.data.publicUrl !== undefined) {
+          ctx.publicUrl = r.data.publicUrl ?? opts.gateway.replace(/\/+$/, "");
+        }
+        const recommended = r.status === 200 ? r.data.recommendedVersion : undefined;
+        if (recommended && recommended !== lastReportedUpdate && compareDaemonVersions(LOOPD_VERSION, recommended) === -1) {
+          log(`网关建议更新守护进程：${LOOPD_VERSION} → ${recommended}`);
+          lastReportedUpdate = recommended;
+        }
         const c = r.status === 200 ? r.data.claim : null;
         // 用户在页面点了“刷新模型列表”：后台探测，不阻塞领取
         if (r.status === 200 && r.data.probe?.length)
@@ -599,6 +616,19 @@ export async function serve(opts: ServeOptions): Promise<void> {
     } catch (e) {
       log(`循环异常（将重试）：${(e as Error).message}`);
     }
+    // 仅在没有正在执行的任务时交接。空闲且已回传提交的会话由新版接回原租约。
+    const settled = !retiring.size && !publishing.size && [...active].every(([sid, session]) =>
+      session.lost || (!!session.reportedHead && d.store.getMeta(sid)?.state === "idle"));
+    if (settled && !opts.signal?.aborted) {
+      if (restart) break;
+      if (opts.update && !checkingUpdate && Date.now() >= nextUpdateCheck) {
+        checkingUpdate = true;
+        nextUpdateCheck = Date.now() + 5 * 60_000;
+        void opts.update().then((ready) => { restart = ready; })
+          .catch((error: unknown) => log(`守护进程更新暂未完成：${(error as Error).message.split("\n")[0]}`))
+          .finally(() => { checkingUpdate = false; });
+      }
+    }
     // 按忙闲调整轮询频率：避免空转消耗数据库与 Worker 请求配额
     const states = [...active.keys()].map(
       (sid) => d.store.getMeta(sid)?.state ?? "running",
@@ -608,7 +638,9 @@ export async function serve(opts: ServeOptions): Promise<void> {
       opts.signal,
     );
   }
+  clearInterval(beatTimer);
   await d.close();
+  return restart ?? undefined;
 }
 
 function tail(s: string, n = 400): string {
@@ -905,7 +937,7 @@ function prBody(ctx: Ctx, sid: string, a: ActiveSession): string {
     a.body || "（没有补充说明）",
     "",
     "---",
-    `由 Loop 创建 · 任务：${ctx.gateway}/tasks/${a.taskId}`,
+    `由 Loop 创建 · 任务：${ctx.publicUrl}/tasks/${a.taskId}`,
     report ? `\n### 交付报告\n${report}` : "",
   ].join("\n");
 }
@@ -1204,16 +1236,25 @@ async function runDelivery(ctx: Ctx, claim: Claim, lease: PublishLease): Promise
         const result = await runPublishInSession(ctx.d, sid, prompt, PUBLISH_TIMEOUT_MS, { resetWaiting: true });
         if (result.state !== "idle") {
           await ctx.d.cancel(sid, { local: true }).catch(() => undefined);
-          return { passed: false, output: "" };
+          return { verdict: "blocked", output: result.reply || "环境测试会话中断，请查看会话后重试。" };
         }
-        const lines = result.reply.trim().split("\n");
-        const verdict = lines.at(-1)?.replaceAll("*", "").trim();
-        if (verdict !== "测试结果：通过" && verdict !== "测试结果：失败") return { passed: false, output: "" };
-        return { passed: verdict === "测试结果：通过", output: lines.slice(0, -1).join("\n") || verdict };
+        const parsed = parseEnvironmentTest(result.reply);
+        if (parsed.verdict !== "unclear" || lease.lost) return parsed;
+        const clarified = await runPublishInSession(ctx.d, sid,
+          "请根据刚完成的测试报告补充结论。无需重新执行测试。最后一行写「测试结果：通过」「测试结果：失败」或「测试结果：受阻」。信息不足时说明还需要什么。",
+          PUBLISH_TIMEOUT_MS,
+        );
+        const verdict = parseEnvironmentTest(clarified.reply);
+        if (clarified.state !== "idle") {
+          await ctx.d.cancel(sid, { local: true }).catch(() => undefined);
+          return { verdict: "blocked", output: [parsed.output, verdict.output].filter(Boolean).join("\n\n") || "测试结论补充中断，请查看会话后重试。" };
+        }
+        return { ...verdict, output: [parsed.output, verdict.output].filter(Boolean).join("\n\n") };
       },
     });
     if (step.repair && stage === "preview_test") {
       await forge.fetch(meta.repo);
+      if (lease.lost) return "failed";
       const base = await startNewRound(meta.cwd, "dev");
       ctx.d.store.updateMeta(sid, { base, planResultPending: undefined });
       await forge.deleteRemoteBranch({ repoDir: meta.repo, branch: meta.branch });

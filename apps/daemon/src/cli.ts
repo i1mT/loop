@@ -2,6 +2,7 @@
 import { connectionCommand } from "./connection/commands.ts";
 import { readConnection } from "./connection/config.ts";
 import { lockDaemon } from "./connection/process.ts";
+import { portableUpdates } from "./connection/update.ts";
 // loopd 命令行：本地验证与手动操作入口。数据目录默认 ~/.loop-daemon，可用 LOOPD_HOME 覆盖。
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -73,9 +74,11 @@ async function main(): Promise<void> {
         process.on("SIGINT", () => ac.abort());
         process.on("SIGTERM", () => ac.abort());
         const unlock = lockDaemon(dataDir);
+        let restart: (() => Promise<void>) | undefined;
         try {
-          await serve({ gateway, token, daemonId: process.env.LOOPD_MACHINE_ID ? defaultDaemonId() : saved?.machineId ?? defaultDaemonId(), machineName: process.env.LOOPD_MACHINE_NAME, dataDir, signal: ac.signal });
+          restart = await serve({ gateway, token, update: portableUpdates(gateway.replace(/\/$/, ""), dataDir), daemonId: process.env.LOOPD_MACHINE_ID ? defaultDaemonId() : saved?.machineId ?? defaultDaemonId(), machineName: process.env.LOOPD_MACHINE_NAME, dataDir, signal: ac.signal });
         } finally { unlock(); }
+        if (!ac.signal.aborted) await restart?.();
         return; // serve 结束后不再执行 finally 之外的逻辑
       }
       case "recover":

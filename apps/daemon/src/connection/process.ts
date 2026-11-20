@@ -27,7 +27,7 @@ export async function startDaemon(dataDir: string): Promise<void> {
   mkdirSync(dataDir,{recursive:true,mode:0o700});
   const log = openSync(join(dataDir,"daemon.log"),"a",0o600);
   const entry = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "../cli.ts" : "../cli.js",import.meta.url));
-  const child = spawn(process.execPath,[entry,"serve"],{detached:true,stdio:["ignore",log,log],env:{...process.env,LOOPD_HOME:dataDir}});
+  const child = spawn(process.execPath,[entry,"serve"],{detached:true,stdio:["ignore",log,log],env:{...process.env,LOOPD_HOME:dataDir,LOOPD_MANAGED:"1"}});
   closeSync(log); child.unref();
   await new Promise<void>((resolve,reject)=>{child.once("spawn",resolve);child.once("error",reject);});
   for (let i=0;i<50;i++) {

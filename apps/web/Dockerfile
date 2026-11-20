@@ -34,6 +34,7 @@ COPY --from=build /app/apps/web/public /app/apps/web/public
 COPY --from=build /app/apps/web/server.mjs /app/apps/web/server.mjs
 COPY --from=build /app/apps/web/lib /app/apps/web/lib
 COPY --from=build /app/apps/web/package.json /app/apps/web/package.json
+COPY --from=build /app/apps/daemon/package.json /app/apps/daemon/package.json
 COPY --from=build /app/node_modules /app/node_modules
 COPY --from=build /app/apps/web/node_modules /app/apps/web/node_modules
 COPY --from=build /app/packages/core /app/packages/core

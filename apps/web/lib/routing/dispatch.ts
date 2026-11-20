@@ -1,3 +1,4 @@
+import { projectCompatibilitySql } from "../daemon-compatibility.ts";
 import type { Db } from "../pg.ts";
 import { ONLINE_MS } from "../machines.ts";
 
@@ -19,6 +20,7 @@ function candidates() {
     CASE WHEN b.agent=COALESCE(?,b.agent,p.agent) THEN COALESCE(b.model,a.default_model) ELSE a.default_model END AS default_model,
     CASE WHEN b.agent=COALESCE(?,b.agent,p.agent) THEN COALESCE(b.effort,a.default_effort) ELSE a.default_effort END AS default_effort,
     p.dispatch_cursor,
+    ${projectCompatibilitySql} AS compatibility,
     m.last_seen>=? AS online,
     EXISTS(SELECT 1 FROM tasks busy WHERE busy.machine_id=m.id AND (
       busy.stage IN ('queued','approved','publishing','needs_you') OR
@@ -30,7 +32,8 @@ function candidates() {
 export function dispatchInsert(db: Db, input: DispatchInput) {
   const access=input.actorId!==undefined?` AND (m.owner_user_id=? OR EXISTS(SELECT 1 FROM space_machines sm WHERE sm.machine_id=m.id AND sm.space_id=p.space_id AND sm.shared=1))`:"";
   return db.prepare(`WITH candidates AS (${candidates()}${access}), selected AS (
-      SELECT * FROM candidates ORDER BY CASE WHEN online AND NOT busy THEN 0 WHEN online THEN 1 ELSE 2 END,
+      SELECT * FROM candidates ORDER BY (compatibility=2),
+      CASE WHEN online AND NOT busy THEN 0 WHEN online THEN 1 ELSE 2 END, compatibility,
       CASE WHEN position>=dispatch_cursor THEN 0 ELSE 1 END,position LIMIT 1
     ), inserted AS (
       INSERT INTO tasks(id,project_id,title,body,agent,model,effort,source,source_ref,machine_id,stage,release_review,plan_review,batch_eligible,preview_slot,priority,created_at,updated_at,execution_path,execution_snapshot)
