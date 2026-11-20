@@ -124,18 +124,30 @@ export async function syncAndMerge(ctx: MergeCtx): Promise<MergeOutcome> {
   return { outcome: "merged", mergeSha: state.mergeSha };
 }
 
-/** 合并后的清理：移除任务 worktree、本地分支、远端分支。失败不影响结果。 */
-export async function cleanupTask(forge: Forge, repoDir: string, wt: Worktree): Promise<void> {
+/** 清理任务工作树和本地分支。驳回时保留远端源分支，供查看和恢复。 */
+export async function cleanupTask(forge: Forge, repoDir: string, wt: Worktree, remote: "keep" | "delete"): Promise<void> {
   await git(repoDir, "worktree", "remove", "--force", wt.path).catch(() => undefined);
   await git(repoDir, "branch", "-D", wt.branch).catch(() => undefined);
   await git(repoDir, "worktree", "prune").catch(() => undefined);
-  await forge.deleteRemoteBranch({ repoDir, branch: wt.branch });
+  if (remote === "delete") await forge.deleteRemoteBranch({ repoDir, branch: wt.branch });
 }
 
-/** 驳回或取消任务：关闭 PR（如有），再清理 worktree 与分支。每一步失败都不影响其余步骤。 */
-export async function retireBranch(opts: { forge: Forge; githubRepo: string; repoDir: string; wt: Worktree; pr: { number: number } | null; comment: string }): Promise<void> {
-  if (opts.pr) await opts.forge.closePr({ githubRepo: opts.githubRepo, number: opts.pr.number, comment: opts.comment, cwd: opts.repoDir }).catch(() => undefined);
-  await cleanupTask(opts.forge, opts.repoDir, opts.wt);
+/** 驳回或取消任务时关闭 PR/MR。驳回保留远端源分支。 */
+export async function retireBranch(opts: {
+  forge: Forge;
+  githubRepo: string;
+  repoDir: string;
+  wt: Worktree;
+  pr: { number: number } | null;
+  stage: "rejected" | "cancelled";
+}): Promise<void> {
+  if (opts.pr) {
+    const action = opts.stage === "rejected" ? "驳回" : "取消";
+    await opts.forge.closePr({
+      githubRepo: opts.githubRepo, number: opts.pr.number, comment: `该任务已在 Loop 中被${action}。`, cwd: opts.repoDir,
+    }).catch(() => undefined);
+  }
+  await cleanupTask(opts.forge, opts.repoDir, opts.wt, opts.stage === "rejected" ? "keep" : "delete");
 }
 
 /** 在指定提交上读取文件内容（不依赖工作区状态） */

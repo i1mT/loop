@@ -40,7 +40,6 @@ import {
   publishBranch,
   retireBranch,
   syncAndMerge,
-  cleanupTask,
 } from "./pr-flow.ts";
 
 const PROMPT_PATH = new URL("../prompts/engineer.md", import.meta.url);
@@ -673,12 +672,12 @@ function currentHead(path: string): string | null {
   }
 }
 
-/** 任务被驳回或取消：停止会话，关闭 PR，清理 worktree 与分支，释放租约，不再管理这个会话 */
+/** 结束会话并释放租约。驳回保留远端源分支，供查看和恢复。 */
 async function retireTask(
   ctx: Ctx,
   sid: string,
   a: ActiveSession,
-  stage: string,
+  stage: "rejected" | "cancelled",
 ): Promise<void> {
   const meta = ctx.d.store.getMeta(sid);
   a.lost = true; // 停止回传与续租
@@ -695,10 +694,7 @@ async function retireTask(
       repoDir: a.repoDir,
       wt,
       pr: a.pr,
-      comment:
-        stage === "rejected"
-          ? "该任务已在 Loop 中被驳回，关闭此 PR。"
-          : "该任务已在 Loop 中取消，关闭此 PR。",
+      stage,
     });
   }
   await ctx.gw

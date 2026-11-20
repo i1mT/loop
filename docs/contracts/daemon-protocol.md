@@ -77,7 +77,7 @@
 - `POST /api/daemon/hello`：机器注册与智能体上报（机器 ID = daemonId）。
 - `POST /api/daemon/claim`：请求体 `{daemonId, holding: [taskId]}`，`holding` 是本机已在管理的任务，网关不再把它们当作“重新接管”返回；返回 `repoPath、githubRepo、mainRef、branch、prNumber、prUrl、approvedSha`。同机器已持有有效租约时，发布领取沿用该租约。
 - `POST /api/daemon/sessions/:id/head`：附带 `branch、prNumber、prUrl`。
-- `POST /api/daemon/leases/:id/heartbeat`：响应带 `stage`；为 `rejected/cancelled` 时守护进程关闭 PR、清理工作树后调用 `POST /api/daemon/leases/:id/release` 释放租约；为 `failed/published` 时只停止管理并释放租约。
+- `POST /api/daemon/leases/:id/heartbeat` 返回 `stage`。任务被驳回或取消时，守护进程关闭 PR/MR、清理本地工作树，再调用 `POST /api/daemon/leases/:id/release` 释放租约。驳回保留远端源分支，供查看和恢复。任务失败或已发布时，守护进程停止管理并释放租约。
 - 会话事件写入是批量且幂等的：只有真正新写入的事件才会触发阶段转换；`approved/publishing` 阶段不被会话事件改动。
 - 人工接口：`POST /api/tasks/:id/cancel`；`GET /api/status`。
 

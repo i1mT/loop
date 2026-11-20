@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { FakeForge } from "./testing/fake-forge.ts";
 import { git, tempDir } from "./testing/fixtures.ts";
 import { branchBase, cleanupTask, commitLeftovers, publishBranch, retireBranch, syncAndMerge } from "./pr-flow.ts";
-import { createWorktree, type Worktree } from "./worktree.ts";
+import { createWorktree, restoreWorktree, type Worktree } from "./worktree.ts";
 
 const REPO = "o/r";
 
@@ -178,7 +178,7 @@ test("合并后清理：worktree、本地分支、远端分支都被移除", asy
   commitFile(wt, "a.txt", "hello\nchange\n", "c1");
   await publishBranch(ctx());
   assert.ok(forge.remoteHead(wt.branch));
-  await cleanupTask(forge, repoDir, wt);
+  await cleanupTask(forge, repoDir, wt, "delete");
   assert.equal(existsSync(wt.path), false);
   assert.equal(git(repoDir, "branch", "--list", wt.branch).trim(), "");
   assert.equal(forge.remoteHead(wt.branch), null);
@@ -211,22 +211,30 @@ test("两个并发任务：各自独立分支与 PR，先后合并后主分支�
   assert.equal(readFileSync(join(repoDir, "a.txt"), "utf8"), "hello\n");
 });
 
-test("驳回或取消：关闭 PR，清理 worktree 与本地、远端分支，主分支不受影响", async () => {
-  const { forge, repoDir, wt, ctx } = await setup();
-  commitFile(wt, "a.txt", "x\n", "change");
-  const pub = await publishBranch(ctx())!;
-  const mainBefore = rev(repoDir, "origin/main");
-  await retireBranch({ forge, githubRepo: REPO, repoDir, wt, pr: pub!.pr, comment: "驳回" });
-  assert.equal(forge.prs[0].state, "CLOSED", "PR 已关闭，不是合并");
-  assert.equal(existsSync(wt.path), false, "worktree 已删除");
-  assert.equal(git(repoDir, "branch", "--list", wt.branch).trim(), "", "本地分支已删除");
-  assert.equal(await forge.remoteHead(wt.branch), null, "远端分支已删除");
-  assert.equal(rev(repoDir, "origin/main"), mainBefore, "主分支没有变化");
-});
+for (const stage of ["rejected", "cancelled"] as const) {
+  test(`${stage === "rejected" ? "驳回保留" : "取消删除"}远端分支，关闭 PR 并清理本地`, async () => {
+    const { forge, repoDir, wt, ctx } = await setup();
+    const head = commitFile(wt, "a.txt", "x\n", "change");
+    const pub = (await publishBranch(ctx()))!;
+    const mainBefore = rev(repoDir, "origin/main");
+    await retireBranch({ forge, githubRepo: REPO, repoDir, wt, pr: pub.pr, stage });
+    assert.equal(forge.prs[0].state, "CLOSED");
+    assert.equal(existsSync(wt.path), false);
+    assert.equal(git(repoDir, "branch", "--list", wt.branch).trim(), "");
+    assert.equal(forge.remoteHead(wt.branch), stage === "rejected" ? head : null);
+    assert.equal(rev(repoDir, "origin/main"), mainBefore);
+
+    if (stage === "rejected") {
+      await forge.fetch(repoDir);
+      assert.equal(await restoreWorktree({ repo: repoDir, wt, prNumber: async () => null }), "restored");
+      assert.equal(rev(wt.path, "HEAD"), head);
+    }
+  });
+}
 
 test("驳回时没有 PR（只出过方案）也能收尾", async () => {
   const { forge, repoDir, wt } = await setup();
-  await retireBranch({ forge, githubRepo: REPO, repoDir, wt, pr: null, comment: "驳回" });
+  await retireBranch({ forge, githubRepo: REPO, repoDir, wt, pr: null, stage: "rejected" });
   assert.equal(existsSync(wt.path), false);
   assert.equal(forge.prs.length, 0);
 });
