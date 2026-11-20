@@ -3,7 +3,7 @@
 // - 发布：领取已批准的任务 → 同步主分支 → 确认仍是审核过的提交 → 以 SHA 执行发布命令 → 回传结果
 // 网关只通过 HTTP 交互（docs/contracts/daemon-protocol.md）；令牌只从环境变量读取，不写入仓库。
 import { advanceDelivery, parseEnvironmentTest, type DeliveryStep } from "./delivery.ts";
-import { DAEMON_CAPABILITIES, compareDaemonVersions, isDeliveryStage, type DeliverySettings, type DeliveryState } from "@loop/core";
+import { DAEMON_CAPABILITIES, compareDaemonVersions, isDeliveryStage, type DeliverySettings, type DeliveryState, type ReleaseTask } from "@loop/core";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -1068,8 +1068,11 @@ async function startOrReattach(ctx: Ctx, claim: Claim): Promise<void> {
       try {
         await forge.fetch(meta.repo);
         const head = await startNewRound(meta.cwd, t.mainRef);
-        d.store.updateMeta(sid, { base: head, round });
+        const branch = t.delivery ? `loop/${branchBase(t.id, t.title)}-r${round}` : meta.branch;
+        if (branch !== meta.branch) await git(meta.cwd, "switch", "-C", branch);
+        d.store.updateMeta(sid, { base: head, branch, round, planResultPending: undefined });
         meta.base = head;
+        meta.branch = branch;
         forwarded = d.store.read(sid).reduce((m, e) => Math.max(m, e.seq), -1);
         log(
           `任务 ${t.id} 进入第 ${round} 轮：工作树已对齐 origin/${t.mainRef}（${head.slice(0, 8)}）`,
@@ -1222,7 +1225,7 @@ async function runDelivery(ctx: Ctx, claim: Claim, lease: PublishLease): Promise
       stage, state: delivery.state, settings: delivery.settings, forge, githubRepo: t.githubRepo,
       repoDir: meta.repo, wt, prNumber: t.prNumber, head: t.headSha ?? null, active: () => !lease.lost,
       candidates: async () => {
-        const result = await ctx.gw.call<{ tasks: { id: string; round: number; title: string; sha: string }[] }>("POST", route, { ...auth, candidates: true });
+        const result = await ctx.gw.call<{ tasks: (ReleaseTask & { sha: string })[] }>("POST", route, { ...auth, candidates: true });
         if (result.status !== 200) throw new Error("无法读取当前待发布的任务");
         return result.data.tasks;
       },
@@ -1252,7 +1255,7 @@ async function runDelivery(ctx: Ctx, claim: Claim, lease: PublishLease): Promise
         return { ...verdict, output: [parsed.output, verdict.output].filter(Boolean).join("\n\n") };
       },
     });
-    if (step.repair && stage === "preview_test") {
+    if (step.repair && !step.repairProduction && step.state.previewMerge === null) {
       await forge.fetch(meta.repo);
       if (lease.lost) return "failed";
       const base = await startNewRound(meta.cwd, "dev");

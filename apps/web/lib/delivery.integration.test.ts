@@ -7,7 +7,7 @@ import { createProject, createTask, getTask, updateProject } from "./tasks.ts";
 import { hello } from "./machines.ts";
 import { taskDaemonUpdate } from "./daemon-compatibility.ts";
 import { claim, reportHead } from "./daemon-api.ts";
-import { deliveryAction, deliveryCandidates, getDelivery, reportDelivery } from "./delivery.ts";
+import { deliveryAction, deliveryCandidates, getDelivery, previousProductionRecovery, reportDelivery } from "./delivery.ts";
 import { acceptTechnicalPlan, approveTechnicalPlan, getTechnicalPlan } from "./task-plan/service.ts";
 import { processTaskPlans } from "./task-plan/process.ts";
 
@@ -75,12 +75,14 @@ test("交付流程：本地技术方案、预览合入、共享发布与租约�
   await db.prepare("UPDATE tasks SET stage='preview_test' WHERE id=?").bind(another.id).run();
   await db.prepare("UPDATE task_delivery SET state=jsonb_build_object('previewMerge',?::text),next_at=? WHERE task_id=?")
     .bind(sha, Date.now() + 30000, another.id).run();
-  const release = { number: 2, url: "https://example.com/release", head: sha, tasks: [{ id: task.id, round: 1, title: task.title }, { id: another.id, round: 1, title: another.title }] };
+  const release = { number: 2, url: "https://example.com/release", head: sha, tasks: [{ id: task.id, round: 1, title: task.title, verification: "passed" as const }, { id: another.id, round: 1, title: another.title, verification: "pending" as const }] };
   const preparing = (await claim(id, [], true, true))!;
   assert.equal((await deliveryCandidates(preparing.leaseId, id))[0]?.sha, sha);
   assert.equal(await reportDelivery(preparing.leaseId, { ...fromPreview, stage: "production_review", next: "production_review", state: { release } }), true);
   assert.equal(await deliveryAction(task.id, "merge", "b".repeat(40), release.number), false);
-  const approved = await Promise.all([deliveryAction(task.id, "merge", sha, release.number), deliveryAction(task.id, "merge", sha, release.number)]);
+  assert.equal(await deliveryAction(task.id, "merge", sha, release.number), false);
+  assert.equal(await deliveryAction(task.id, "merge", sha, release.number, release.tasks.slice(0, 1)), false);
+  const approved = await Promise.all([deliveryAction(task.id, "merge", sha, release.number, release.tasks), deliveryAction(task.id, "merge", sha, release.number, release.tasks)]);
   assert.deepEqual(approved.sort(), [false, true]);
   const production = (await claim(id, [], true, true))!;
   const fromProduction = { daemonId: id, round: 1, stage: "production_deploy" } as const;
@@ -93,7 +95,21 @@ test("交付流程：本地技术方案、预览合入、共享发布与租约�
   assert.equal((await getTask(task.id))?.merge_sha, sha);
   assert.equal(await deliveryAction(task.id, "retry"), true);
   const retry = (await claim(id, [], true, true))!;
-  assert.equal(await reportDelivery(retry.leaseId, { ...fromProduction, stage: "production_test", next: "published", state: { productionResult: "通过" } }), true);
-  assert.equal((await getTask(task.id))?.stage, "published");
+  const repairProduction = {
+    ...fromProduction, stage: "production_test", next: "running", repairProduction: true,
+    repair: "生产回归失败，请到 dev 修复", state: { productionResult: "发现生产问题", repairCount: 2, repairReasons: ["same-report"] },
+  } satisfies Parameters<typeof reportDelivery>[1];
+  assert.equal(await reportDelivery(retry.leaseId, repairProduction), true);
+  assert.equal(await reportDelivery(retry.leaseId, repairProduction), false);
+  const previousProduction = await previousProductionRecovery(db, task.id, 2);
+  assert.equal(previousProduction?.sha, sha);
+  assert.equal(previousProduction?.result, "发现生产问题");
+  assert.deepEqual((await getDelivery(db, task.id, 2))?.state, { repairCount: 2, repairReasons: ["same-report"] });
+  assert.equal((await getTask(task.id))?.merge_sha, null);
+  const followUp = (await claim(id, [], true, true))!;
+  assert.equal(followUp.task.round, 2);
+  assert.equal(followUp.task.mainRef, "dev");
+  assert.equal(followUp.task.sessionId, id);
+  assert.equal(followUp.task.prNumber, null);
   await db.close();
 });

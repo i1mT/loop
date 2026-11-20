@@ -23,7 +23,18 @@ export interface PrInfo {
 
 export interface PipelineQuery { githubRepo: string; branch: string; sha: string; workflow: string; cwd: string }
 
+export interface PipelineFailure {
+  retryKey: string;
+  reason: string;
+  logs: string;
+  kind: "transient" | "code" | "blocked";
+}
+
+type PipelineRunQuery = PipelineQuery & { id: string };
+
 export interface Forge {
+  pipelineFailure?(opts: PipelineRunQuery): Promise<PipelineFailure>;
+  retryPipeline?(opts: PipelineRunQuery): Promise<void>;
   pipeline?(opts: PipelineQuery): Promise<DeploymentRun | null>;
   /** 确保本机有一份检出并返回其路径。有 localPath 则用它（校验 origin），否则在数据目录克隆。 */
   ensureCheckout(opts: { githubRepo: string; localPath?: string | null; dataDir: string }): Promise<string>;
@@ -169,10 +180,25 @@ export class GitHubForge implements Forge {
     if (!opts.workflow) throw new Error("请在项目设置填写对应环境的 GitHub Actions 部署 workflow");
     const query = new URLSearchParams({ branch: opts.branch, event: "push", head_sha: opts.sha, per_page: "30" });
     const data = JSON.parse(await this.run("gh", ["api", `repos/${opts.githubRepo}/actions/workflows/${encodeURIComponent(opts.workflow)}/runs?${query}`], opts.cwd)) as {
-      workflow_runs: { id: number; html_url: string; status: string; conclusion: string | null; head_branch: string; head_sha: string; event: string }[];
+      workflow_runs: { run_attempt?: number; id: number; html_url: string; status: string; conclusion: string | null; head_branch: string; head_sha: string; event: string }[];
     };
     const run = data.workflow_runs.find((r) => r.head_branch === opts.branch && r.head_sha === opts.sha && r.event === "push");
-    return run ? { id: String(run.id), url: run.html_url, status: run.status === "completed" ? finishedRun(run.conclusion) : "pending" } : null;
+    return run ? { id: String(run.id), url: run.html_url, ...(run.run_attempt === undefined ? {} : { attempt: String(run.run_attempt) }), status: run.status === "completed" ? finishedRun(run.conclusion) : "pending" } : null;
+  }
+
+  async pipelineFailure(opts: PipelineRunQuery): Promise<PipelineFailure> {
+    const path = `repos/${opts.githubRepo}/actions/runs/${opts.id}`;
+    const { jobs } = JSON.parse(await this.run("gh", ["api", `${path}/jobs?per_page=100`], opts.cwd)) as {
+      jobs: { id: number; name: string; conclusion: string; steps?: { name: string; conclusion: string }[] }[];
+    };
+    const failed = jobs.filter((job) => ["failure", "timed_out", "startup_failure"].includes(job.conclusion));
+    const reason = failed.map((job) => [job.name, ...(job.steps ?? []).filter((step) => step.conclusion === "failure").map((step) => step.name)].join(" / ")).join("、");
+    const logs = await this.run("gh", ["run", "view", opts.id, "--repo", opts.githubRepo, "--log-failed"], opts.cwd).catch(() => "");
+    return describePipelineFailure(failed.map((job) => job.id).join(","), reason, logs, failed.some((job) => job.conclusion === "startup_failure"));
+  }
+
+  async retryPipeline(opts: PipelineRunQuery): Promise<void> {
+    await this.run("gh", ["run", "rerun", opts.id, "--repo", opts.githubRepo, "--failed"], opts.cwd);
   }
 
   async closePr(opts: { githubRepo: string; number: number; comment: string; cwd: string }): Promise<void> {
@@ -240,7 +266,7 @@ export class GitLabForge implements Forge {
     try {
       payload = text ? JSON.parse(text) : null;
     } catch {
-      payload = null;
+      payload = text;
     }
     if (!response.ok) {
       const detail =
@@ -313,7 +339,7 @@ export class GitLabForge implements Forge {
   }): Promise<PrRef | null> {
     const list = await this.api<GitLabMr[]>(
       "GET",
-      `${this.project(opts.githubRepo)}/merge_requests?state=opened&source_branch=${encodeURIComponent(opts.head)}`,
+      `${this.project(opts.githubRepo)}/merge_requests?state=opened&source_branch=${encodeURIComponent(opts.head)}${opts.base ? `&target_branch=${encodeURIComponent(opts.base)}` : ""}`,
     );
     const first = list.find((row) => row.source_project_id === row.target_project_id);
     return first ? { number: first.iid, url: first.web_url } : null;
@@ -398,6 +424,22 @@ export class GitLabForge implements Forge {
     return { id: String(run.id), url: run.web_url, status: ["success", "failed", "canceled", "skipped"].includes(run.status) ? finishedRun(run.status) : "pending" };
   }
 
+  async pipelineFailure(opts: PipelineRunQuery): Promise<PipelineFailure> {
+    const project = this.project(opts.githubRepo);
+    const jobs = await this.api<{ id: number; name: string; failure_reason?: string }[]>(
+      "GET", `${project}/pipelines/${opts.id}/jobs?scope%5B%5D=failed&per_page=100`,
+    );
+    const traces = await Promise.all(jobs.slice(0, 3).map((job) =>
+      this.api<string>("GET", `${project}/jobs/${job.id}/trace`).catch(() => "")));
+    const reason = jobs.map((job) => `${job.name}${job.failure_reason ? `（${job.failure_reason}）` : ""}`).join("、");
+    const transient = jobs.length > 0 && jobs.every((job) => ["runner_system_failure", "scheduler_failure", "stuck_or_timeout_failure"].includes(job.failure_reason ?? ""));
+    return describePipelineFailure(jobs.map((job) => job.id).sort((a, b) => a - b).join(","), reason, traces.join("\n"), transient);
+  }
+
+  async retryPipeline(opts: PipelineRunQuery): Promise<void> {
+    await this.api("POST", `${this.project(opts.githubRepo)}/pipelines/${opts.id}/retry`);
+  }
+
   async closePr(opts: {
     githubRepo: string;
     number: number;
@@ -445,4 +487,15 @@ function finishedRun(result: string | null): DeploymentRun["status"] {
   if (result === "canceled" || result === "cancelled") return "cancelled";
   if (result === "skipped") return "skipped";
   return "failed";
+}
+
+function describePipelineFailure(retryKey: string, reason: string, output: string, runnerFailure: boolean): PipelineFailure {
+  const logs = output.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim().slice(-7000);
+  const blocked = /permission denied|access denied|unauthorized|authentication failed|invalid (?:token|credentials)|(?:secret|credential).*(?:missing|not set|required)|(?:missing|required).*(?:secret|credential)/i.test(logs);
+  const transient = runnerFailure || /ECONNRESET|EAI_AGAIN|ETIMEDOUT|temporary failure in name resolution|HTTP (?:429|502|503|504)|runner(?: system)? failure/i.test(logs);
+  const code = /(?:tests? (?:failed|failures?)|assertionerror|typeerror:|syntaxerror:|error TS\d+|failed to compile|compilation failed|lint(?:ing)? failed|\bFAIL\s+\S+|\d+ failed\b)/i.test(logs);
+  return {
+    retryKey, reason: (reason || "读取不到失败步骤").slice(0, 600), logs,
+    kind: blocked ? "blocked" : code ? "code" : transient ? "transient" : /build failed/i.test(logs) ? "code" : "blocked",
+  };
 }

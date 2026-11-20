@@ -218,3 +218,40 @@ test("GitHub 只以指定 workflow 的分支 push 结果推进部署", async () 
     id: "2", url: "https://example.com/runs/2", status: "pending",
   });
 });
+
+test("GitHub 获取失败步骤和日志，并只重跑失败任务", async () => {
+  const calls: string[][] = [];
+  const forge = new GitHubForge(async (_cmd, args) => {
+    calls.push(args);
+    if (args[0] === "api") return JSON.stringify({ jobs: [
+      { id: 7, name: "CI", conclusion: "failure", steps: [{ name: "类型检查", conclusion: "failure" }] },
+    ] });
+    return args[1] === "view" ? "src/app.ts: error TS2304: Cannot find name." : "";
+  });
+  const query = { id: "42", githubRepo: "example/demo", branch: "dev", sha: "a".repeat(40), workflow: "ci.yml", cwd: "." };
+  const failure = await forge.pipelineFailure(query);
+  assert.equal(failure.kind, "code");
+  assert.match(failure.reason, /类型检查/);
+  assert.match(failure.logs, /TS2304/);
+  await forge.retryPipeline(query);
+  assert.deepEqual(calls.at(-1), ["run", "rerun", "42", "--repo", "example/demo", "--failed"]);
+});
+
+test("GitLab 获取失败任务和日志，runner 故障可重跑", async () => {
+  const requests: [string | undefined, string][] = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    const path = new URL(url.toString()).pathname;
+    requests.push([init?.method, path]);
+    if (path.endsWith("/trace")) return new Response("runner disconnected\n");
+    if (path.endsWith("/jobs")) return Response.json([{ id: 7, name: "deploy", failure_reason: "runner_system_failure" }]);
+    return Response.json({});
+  };
+  const forge = new GitLabForge({ host: "git.example.com", token: "fixture", fetchImpl });
+  const query = { id: "42", githubRepo: "example/demo", branch: "dev", sha: "a".repeat(40), workflow: "", cwd: "." };
+  const failure = await forge.pipelineFailure(query);
+  assert.equal(failure.kind, "transient");
+  assert.equal(failure.retryKey, "7");
+  assert.match(failure.logs, /runner disconnected/);
+  await forge.retryPipeline(query);
+  assert.deepEqual(requests.at(-1), ["POST", "/api/v4/projects/example%2Fdemo/pipelines/42/retry"]);
+});

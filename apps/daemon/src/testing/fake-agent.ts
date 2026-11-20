@@ -6,7 +6,7 @@
 //   silent                    不输出任何内容就 end_turn（模拟被适配器吞掉的模型报错）
 //   其它                      回显
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Readable, Writable } from "node:stream";
@@ -46,7 +46,16 @@ async function runPrompt(sessionId: string, text: string, client: Client): Promi
       await say(client, sessionId, "已完成一次性仓库的改动。");
       return { stopReason: "end_turn" };
     }
+    if (process.env.FAKE_PRODUCTION_REPAIR && text.startsWith("生产验证失败")) {
+      writeFileSync(join(cwd, "production-fix.txt"), "fixed\n");
+      await say(client, sessionId, "已完成生产回归修复。");
+      return { stopReason: "end_turn" };
+    }
     if (text.includes("环境流水线已成功") && text.includes("fixture password")) {
+      if (process.env.FAKE_PRODUCTION_REPAIR && text.startsWith("生产") && !existsSync(join(cwd, "production-fix.txt"))) {
+        await say(client, sessionId, "生产回归发现功能异常。\n测试结果：失败");
+        return { stopReason: "end_turn" };
+      }
       const output = process.env.FAKE_PREVIEW_FAILURE ? "已执行环境测试，预览字号仍不正确。" : "已执行环境测试。\n测试结果：通过";
       await say(client, sessionId, output);
       return { stopReason: "end_turn" };

@@ -2,16 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { DeploymentRun, DeliveryStage, DeliveryState } from "@loop/core";
+import type { DeploymentRun, DeliveryStage, DeliveryState, ReleaseTask } from "@loop/core";
 import { advanceDelivery, parseEnvironmentTest } from "./delivery.ts";
 import { FakeForge } from "./testing/fake-forge.ts";
 import { git, tempDir } from "./testing/fixtures.ts";
 import { createWorktree } from "./worktree.ts";
 import { publishBranch } from "./pr-flow.ts";
-import type { PipelineQuery } from "./forge.ts";
+import type { PipelineFailure, PipelineQuery } from "./forge.ts";
 
 class DeploymentForge extends FakeForge {
   runs = new Map<string, DeploymentRun>();
+  failure: PipelineFailure = { retryKey: "job-1", reason: "部署", logs: "HTTP 503", kind: "transient" };
+  retryCalls = 0;
+  async pipelineFailure() { return this.failure; }
+  async retryPipeline() { this.retryCalls++; }
   async pipeline({ branch, sha }: PipelineQuery) {
     return this.runs.get(`${branch}:${sha}`) ?? null;
   }
@@ -40,7 +44,7 @@ test("预览失败修复后重新合入 dev，通过才准备生产 PR", async (
   const env = { url: "https://example.com", username: "tester", password: "demo password", workflow: "deploy.yml" };
   const tests: string[] = [];
   const settings = { preview: env, production: { ...env, url: "https://prod.example.com" } };
-  const candidates = [{ id: "one", round: 1, title: "改动", sha: "" }];
+  const candidates: (ReleaseTask & { sha: string })[] = [{ id: "one", round: 1, title: "改动", sha: "" }];
   let currentPr = pub;
   let reply = "字号仍不对。\n测试结果:失败";
   const run = (stage: DeliveryStage, state: DeliveryState) => advanceDelivery({
@@ -55,6 +59,26 @@ test("预览失败修复后重新合入 dev，通过才准备生产 PR", async (
   assert.equal(forge.mergeCalls, 1);
   assert.deepEqual(tests, []);
   const success = { status: "success", id: "1", url: "https://example.com/run/1" } as const;
+  forge.runs.set(`dev:${previewMerge}`, { ...success, status: "failed", attempt: "1" });
+  const scheduled = await run("preview_deploy", { previewMerge });
+  assert.equal(scheduled.state.recovery?.[0]?.action, "retry");
+  assert.equal(forge.retryCalls, 0);
+  const sent = await run("preview_deploy", { previewMerge, ...scheduled.state });
+  assert.equal(forge.retryCalls, 1);
+  assert.ok(sent.state.recovery?.[0]?.sentAt);
+  await run("preview_deploy", { previewMerge, ...sent.state });
+  assert.equal(forge.retryCalls, 1, "观察到同一次失败时，不重复请求重跑");
+  forge.runs.set(`dev:${previewMerge}`, { ...success, status: "failed", attempt: "2" });
+  const scheduledAgain = await run("preview_deploy", { previewMerge, ...sent.state });
+  const sentAgain = await run("preview_deploy", { previewMerge, ...scheduledAgain.state });
+  assert.equal(forge.retryCalls, 2);
+  forge.runs.set(`dev:${previewMerge}`, { ...success, status: "failed", attempt: "3" });
+  const exhausted = await run("preview_deploy", { previewMerge, ...sentAgain.state });
+  assert.match(exhausted.error ?? "", /自动重跑 2 次/);
+  forge.failure = { ...forge.failure, kind: "code", logs: "error TS2304: Cannot find name" };
+  const codeFailure = await run("preview_deploy", { previewMerge });
+  assert.equal(codeFailure.next, "running");
+  assert.match(codeFailure.repair ?? "", /TS2304/);
   forge.runs.set(`dev:${previewMerge}`, success);
   const queued = await run("preview_deploy", { previewMerge });
   assert.equal(queued.next, "preview_test");
@@ -78,10 +102,18 @@ test("预览失败修复后重新合入 dev，通过才准备生产 PR", async (
   const retest = await run("preview_deploy", { previewMerge });
   reply = "修复后复测通过。\n测试结果：通过";
   assert.equal((await run("preview_test", { ...retest.state, previewMerge })).next, "production_review");
+  candidates[0].verification = "passed";
   const release = (await run("production_review", { previewMerge })).state.release!;
   assert.equal((await run("production_review", { previewMerge })).state.release?.number, release.number);
   assert.equal(forge.mergeCalls, 2);
   assert.equal((await run("production_deploy", { release, productionApproval: "0".repeat(40) })).next, "production_review");
+  candidates[0].verification = "repairing";
+  const changed = await run("production_deploy", { previewMerge, release, productionApproval: release.head });
+  assert.equal(changed.next, "production_review");
+  assert.equal(changed.state.productionApproval, null);
+  assert.equal(changed.state.release?.tasks[0].verification, "repairing");
+  assert.equal(forge.mergeCalls, 2);
+  candidates[0].verification = "passed";
   const prod = (await run("production_deploy", { previewMerge, release, productionApproval: release.head })).state;
   assert.equal(forge.mergeCalls, 3);
   assert.equal(forge.remoteHead("main"), prod.productionMerge);
@@ -91,4 +123,17 @@ test("预览失败修复后重新合入 dev，通过才准备生产 PR", async (
   assert.equal(forge.mergeCalls, 3);
   assert.equal((await run("production_test", { ...prod, ...ready.state })).next, "published");
   assert.match(tests[2], /https:\/\/prod\.example\.com/);
+  reply = "生产回归异常。\n测试结果：失败";
+  const repairProduction = await run("production_test", { ...prod, ...ready.state });
+  assert.equal(repairProduction.next, "running");
+  assert.equal(repairProduction.repairProduction, true);
+  assert.match(repairProduction.state.productionResult ?? "", /生产回归异常/);
+  const fingerprint = repairProduction.state.repairReasons?.[0];
+  assert.ok(fingerprint);
+  const repeated = await run("production_test", {
+    ...prod, ...ready.state, repairCount: 3, repairReasons: [fingerprint, fingerprint, fingerprint],
+  });
+  assert.equal(repeated.next, "production_test");
+  assert.match(repeated.error ?? "", /同一问题已自动修复 3 次/);
+  assert.equal(forge.mergeCalls, 3, "生产修复不会直接更新 main");
 });

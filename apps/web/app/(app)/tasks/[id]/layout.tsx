@@ -187,7 +187,7 @@ function TaskWorkspace({ id, children }: { id: string; children: ReactNode }) {
       </div>}
       <div className="task-workspace grid min-w-0 gap-4 sm:gap-5">
         <div className="task-workspace-status min-w-0">
-          {data.delivery && <DeliveryCard task={task} state={data.delivery.state} reload={reload} />}
+          {data.delivery && <DeliveryCard task={task} state={data.delivery.state} previousProduction={data.delivery.previousProduction} reload={reload} />}
           {(!data.delivery || (!isDeliveryStage(task.stage) && task.stage !== "published")) && <ReviewCard task={task} progress={progress} checks={checks} reload={reload} />}
         </div>
         <section aria-label="任务内容与会话" className="task-workspace-main flex min-w-0 flex-col rounded-[14px] border border-line bg-card">

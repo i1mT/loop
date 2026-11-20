@@ -1,7 +1,7 @@
 import { requestUserId } from "@/lib/machine-access/request.ts";
 import { fail, json, requireRole } from "@/lib/http.ts";
 import { taskDaemonUpdate } from "@/lib/daemon-compatibility.ts";
-import { getDelivery } from "@/lib/delivery.ts";
+import { getDelivery, previousProductionRecovery } from "@/lib/delivery.ts";
 import { getDb } from "@/lib/db.ts";
 import { pendingConversation } from "@/lib/task-conversation.ts";
 import { getProject, getTask } from "@/lib/tasks.ts";
@@ -31,7 +31,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     taskDaemonUpdate(db, id),
   ]);
   const leaseActive = !!lease;
-  const delivery = deliveryRound ? { state: deliveryRound.state, planPhase: plan?.phase ?? null } : null;
+  const delivery = deliveryRound ? {
+    state: deliveryRound.state,
+    planPhase: plan?.phase ?? (task.round > 1 && deliveryRound.state.repairCount ? "implementing" : null),
+    previousProduction: task.round > 1 ? await previousProductionRecovery(db, id, task.round) : null,
+  } : null;
   const projectSummary = project ? { id: project.id, name: project.name, github_repo: project.github_repo } : null;
   const notifications = (await db.prepare(`SELECT id, kind, body, created_at AS "createdAt" FROM notifications WHERE task_id=? ORDER BY id DESC LIMIT 30`).bind(id).all()).results.reverse();
   const review = {

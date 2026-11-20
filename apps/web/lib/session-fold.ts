@@ -18,7 +18,7 @@ export interface Pending {
 
 export interface SessionResponse {
   daemonUpdate?: { machineId: string; machineName: string; version: string | null; missing: DaemonCapability[] } | null;
-  delivery?: { state: DeliveryState; planPhase: string | null } | null;
+  delivery?: { state: DeliveryState; planPhase: string | null; previousProduction?: Awaited<ReturnType<typeof import("./delivery.ts").previousProductionRecovery>> } | null;
   ok: boolean;
   task: import("./types.ts").TaskItem;
   project: Pick<import("./types.ts").ProjectItem, "id" | "name" | "github_repo"> | null;
