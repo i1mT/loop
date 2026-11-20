@@ -34,6 +34,7 @@ export interface TaskItem {
   /** 任务列表附带的当前执行信息。 */
   machine_name?: string | null;
   lease_active?: boolean;
+  deployment_pending?: boolean;
   plan_phase?: string | null;
 }
 

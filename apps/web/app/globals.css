@@ -112,7 +112,6 @@ select:focus-visible,
   .task-status-icon[data-motion="lift"] { animation: task-status-lift 1.4s ease-in-out infinite; }
   .task-status-icon[data-motion="rock"] { animation: task-status-rock 1.8s ease-in-out infinite; }
   .task-status-icon[data-motion="scan"] { animation: task-status-scan 1.6s ease-in-out infinite; }
-  .task-status-icon[data-motion="spin"] { animation: var(--animate-spin); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -163,4 +162,70 @@ select:focus-visible,
 
 @media (min-width: 64rem) {
   .task-shell { display: grid; grid-template-rows: minmax(0, 1fr); }
+}
+
+/* 阶段色只用于状态标记。列表和详情共用同一套颜色。 */
+[data-task-phase="queue"] { --phase-ink: #5f5b52; --phase-soft: #ebe7da; }
+[data-task-phase="plan"] { --phase-ink: #69458a; --phase-soft: #efe7f5; }
+[data-task-phase="develop"] { --phase-ink: #345781; --phase-soft: #e6edf6; }
+[data-task-phase="review"] { --phase-ink: #595378; --phase-soft: #ece9f3; }
+[data-task-phase="preview-deploy"] { --phase-ink: #76591f; --phase-soft: #f2e9d7; }
+[data-task-phase="preview-test"] { --phase-ink: #226963; --phase-soft: #e0eeeb; }
+[data-task-phase="release"] { --phase-ink: #a63a10; --phase-soft: var(--color-signal-soft); }
+[data-task-phase="regression"] { --phase-ink: #476438; --phase-soft: #e7eddf; }
+
+.task-phase-pill, .task-pipeline-node {
+  color: var(--phase-ink);
+  background: var(--phase-soft);
+  border-color: color-mix(in srgb, var(--phase-ink) 20%, transparent);
+}
+.task-pipeline-label { color: var(--phase-ink); }
+.task-pipeline-flow { background: var(--phase-soft); }
+.task-pipeline-flow::after {
+  content: "";
+  display: block;
+  width: 42%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--phase-ink);
+  opacity: 0.55;
+}
+.task-list-row[data-executing]::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  pointer-events: none;
+  background: var(--phase-soft, var(--color-signal-soft));
+  opacity: 0.35;
+}
+.task-agent-beacon {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--color-signal);
+}
+.task-count-change { display: inline-block; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .task-list-row[data-executing]::before { animation: task-row-breathe 3.6s ease-in-out infinite; }
+  .task-agent-beacon { animation: task-running-beat 1.8s ease-in-out infinite; }
+  .task-pipeline-flow::after { animation: task-running-travel 1.8s ease-in-out infinite; }
+  .task-count-change, .task-status-change { animation: task-running-update 220ms ease-out both; }
+}
+@keyframes task-row-breathe {
+  0%, 100% { opacity: 0.16; }
+  50% { opacity: 0.66; }
+}
+@keyframes task-running-beat {
+  0%, 100% { opacity: 0.45; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1); }
+}
+@keyframes task-running-travel {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(240%); }
+}
+@keyframes task-running-update {
+  from { transform: translateY(3px); opacity: 0.5; }
+  to { transform: translateY(0); opacity: 1; }
 }

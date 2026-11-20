@@ -26,7 +26,7 @@ export function TaskActivity({ tasks }: { tasks: TaskItem[] }) {
           <span className="inline-flex h-4 items-center gap-0.5" aria-hidden>
             {[0, 1, 2].map((i) => <span key={i} className={clsx("h-2.5 w-0.5 rounded-full bg-current", executing && "motion-safe:animate-[task-activity-beat_1.1s_ease-in-out_infinite]")} style={{ animationDelay: `${i * -0.18}s` }} />)}
           </span>
-          <span className="num">{executing}</span> 正在执行
+          <span key={executing} className="num task-count-change">{executing}</span> 正在执行
         </span>
         <span className="text-ink-2"><span className="num">{waiting}</span> 等待执行</span>
         <span className="text-ink-2"><span className="num">{needsReview}</span> 待处理</span>
@@ -34,7 +34,9 @@ export function TaskActivity({ tasks }: { tasks: TaskItem[] }) {
       {agents.size > 0 && <ul aria-label="智能体正在执行的任务数" className="flex flex-wrap gap-1.5">
         {[...agents].sort(([a, ac], [b, bc]) => bc - ac || a.localeCompare(b)).map(([kind, count]) => (
           <li key={kind} className="inline-flex items-center gap-1.5 rounded-full border border-line bg-card px-2 py-0.5">
-            <AgentName kind={kind} size={14} /><span className="num text-ink-2">{count}</span>
+            <AgentName kind={kind} size={14} />
+            <span key={count} className="num task-count-change text-ink-2">{count}</span>
+            <span className="task-agent-beacon" aria-hidden />
           </li>
         ))}
       </ul>}

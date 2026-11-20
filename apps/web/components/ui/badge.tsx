@@ -12,10 +12,10 @@ const TONES: Record<Tone, { pill: string; dot: string }> = {
 };
 
 /** 状态胶囊可用图标替换默认圆点。 */
-export function StatusPill({ tone, children, icon }: { tone: Tone; children: ReactNode; icon?: ReactNode }) {
+export function StatusPill({ tone, children, icon, className }: { tone: Tone; children: ReactNode; icon?: ReactNode; className?: string }) {
   const t = TONES[tone];
   return (
-    <span className={clsx("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium leading-5 whitespace-nowrap", t.pill)}>
+    <span className={clsx("inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium leading-5 whitespace-nowrap", t.pill, className)}>
       {icon ?? <span className={clsx("size-1.5 rounded-full", t.dot)} aria-hidden />}
       {children}
     </span>

@@ -1,5 +1,5 @@
 // 状态词典：任务阶段 → 文案、色调、分组、提示。任务列表、详情、侧边栏共用，只在这里定义。
-import { canTransition, isDeliveryStage, TERMINAL, type Stage } from "@loop/core";
+import { canTransition, isDeliveryStage, TERMINAL, type DeliveryState, type Stage } from "@loop/core";
 
 export type Tone = "idle" | "live" | "review" | "ok" | "bad" | "warn";
 export type Group = "attention" | "review" | "active" | "done" | "closed";
@@ -96,23 +96,43 @@ export function taskStageInfo(task: { stage: string; merge_sha?: string | null; 
   return stageInfo(task.stage);
 }
 
-type ListedTaskStatus = Parameters<typeof taskStageInfo>[0] & { lease_active?: boolean; plan_phase?: string | null };
+type ListedTaskStatus = Parameters<typeof taskStageInfo>[0] & {
+  lease_active?: boolean;
+  deployment_pending?: boolean;
+  plan_phase?: string | null;
+};
 
-/** “进行中”包括排队。只有执行阶段且机器仍持有租约时，才算正在执行。 */
+/** 机器接手或流水线正在运行时，记为正在执行。 */
 export function isTaskExecuting(task: ListedTaskStatus): boolean {
-  return task.lease_active === true && taskStageInfo(task).tone === "live";
+  return (task.lease_active === true || task.deployment_pending === true) && taskStageInfo(task).tone === "live";
 }
 
 export function listedTaskStageInfo(task: ListedTaskStatus): StageInfo {
   const info = taskStageInfo(task);
   if (info.tone !== "live") return info;
-  if (task.lease_active === false) {
+  if (task.lease_active === false && !task.deployment_pending) {
     return { ...info, tone: "idle", label: task.stage === "running" ? "等待机器接手" : info.label, hint: "等待执行机器接手" };
   }
   if (task.stage === "running" && task.plan_phase) {
     return { ...info, label: PLAN_PHASE_LABEL[task.plan_phase] ?? info.label };
   }
   return info;
+}
+
+export type TaskPhase = "queue" | "plan" | "develop" | "review" | "preview-deploy" | "preview-test" | "release" | "regression";
+
+export function taskPhase(stage: string, planPhase?: string | null): TaskPhase | undefined {
+  switch (stage) {
+    case "received": case "batched": case "held": case "queued": return "queue";
+    case "plan_reviewing": return "plan";
+    case "running": case "needs_you": return planPhase === "analyzing" || planPhase === "syncing" || planPhase === "awaiting_review" ? "plan" : "develop";
+    case "plan_approved": return "develop";
+    case "reviewing": return "review";
+    case "preview_deploy": return "preview-deploy";
+    case "preview_test": return "preview-test";
+    case "approved": case "publishing": case "publish_review": case "production_review": case "production_deploy": return "release";
+    case "production_test": return "regression";
+  }
 }
 
 export interface TaskProgress {
@@ -125,7 +145,7 @@ export function taskProgress(
   task: { stage: Stage; approved_sha?: string | null; merge_sha?: string | null; merged_at?: number | null; error: string | null },
   session: { state: string; updated_at?: number } | null,
   leaseActive: boolean,
-  delivery?: { planPhase: string | null },
+  delivery?: { planPhase: string | null; state?: DeliveryState },
 ): TaskProgress {
   let info = taskStageInfo(task);
   let step = pipelinePosition(task.stage);
@@ -148,6 +168,11 @@ export function taskProgress(
     activity = { label: "等待你的回复", spinning: false, waiting: true };
   }
   if (delivery) {
+    const deploymentPending = (task.stage === "preview_deploy" && delivery.state?.previewRun?.status === "pending")
+      || (task.stage === "production_deploy" && delivery.state?.productionRun?.status === "pending");
+    if (isDeliveryStage(task.stage) && info.tone === "live") {
+      info = listedTaskStageInfo({ ...task, lease_active: leaseActive, deployment_pending: deploymentPending });
+    }
     const stepStage = task.stage === "failed" ? "running" : task.stage;
     step = deliveryPosition(stepStage, delivery.planPhase);
     if (task.stage === "running" && step.index === 1 && leaseActive) {
@@ -166,7 +191,11 @@ export const GROUP_LABEL: Record<Group, string> = {
 };
 export const GROUP_ORDER: Group[] = ["attention", "review", "active", "done", "closed"];
 
-export const DELIVERY_PIPELINE = ["排队", "方案", "开发", "预览部署", "预览测试", "生产发布", "生产回归"] as const;
+export const DELIVERY_PIPELINE = [
+  { label: "排队", phase: "queue" }, { label: "方案", phase: "plan" }, { label: "开发", phase: "develop" },
+  { label: "预览部署", phase: "preview-deploy" }, { label: "预览测试", phase: "preview-test" },
+  { label: "生产发布", phase: "release" }, { label: "生产回归", phase: "regression" },
+] as const satisfies ReadonlyArray<{ label: string; phase: TaskPhase }>;
 
 export function deliveryPosition(stage: Stage, planPhase: string | null): TaskProgress["step"] {
   switch (stage) {
@@ -184,7 +213,10 @@ export function deliveryPosition(stage: Stage, planPhase: string | null): TaskPr
   }
 }
 
-export const PIPELINE = ["排队", "开发", "审核", "发布"] as const;
+export const PIPELINE = [
+  { label: "排队", phase: "queue" }, { label: "开发", phase: "develop" },
+  { label: "审核", phase: "review" }, { label: "发布", phase: "release" },
+] as const satisfies ReadonlyArray<{ label: string; phase: TaskPhase }>;
 
 /** 阶段在四步流水线里的位置：index 为当前步（4 表示全部完成），终止态没有当前步 */
 export function pipelinePosition(stage: string): { index: number; closed: boolean } {

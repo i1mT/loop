@@ -31,6 +31,11 @@ test("列表区分正在执行、等待机器和需要人工处理", () => {
   assert.equal(isTaskExecuting(waiting), false);
   assert.equal(isTaskExecuting({ ...task, stage: "production_review" }), false);
   assert.equal(isTaskExecuting({ ...task, stage: "preview_test", error: "部署未完成" }), false);
+  const deploying = { stage: "preview_deploy", error: null, lease_active: false, deployment_pending: true };
+  assert.equal(isTaskExecuting(deploying), true);
+  assert.equal(listedTaskStageInfo(deploying).tone, "live");
+  assert.equal(isTaskExecuting({ ...deploying, error: "流水线已失败" }), false);
+  assert.equal(isTaskExecuting({ ...deploying, deployment_pending: false }), false);
 });
 
 test("发布失败但有 PR 和批准提交：重试发布，不重建 PR", () => {

@@ -25,7 +25,11 @@ test("任务进度保留失败的位置，并区分执行中和人工确认", ()
   assert.deepEqual(taskProgress({ ...failed, approved_sha: "abcdef1" }, null, false).step, { index: 3, closed: false });
   assert.deepEqual(taskProgress(failed, null, false, delivery).step, { index: 2, closed: false });
   const regression = { stage: "production_test" as const, error: null };
-  assert.equal(taskProgress(regression, null, false, delivery).info.tone, "live");
+  assert.equal(taskProgress(regression, null, false, delivery).info.tone, "idle");
+  assert.equal(taskProgress(regression, null, true, delivery).info.tone, "live");
+  assert.equal(taskProgress({ stage: "preview_deploy", error: null }, null, false, {
+    ...delivery, state: { previewRun: { id: "1", url: "https://example.com/run/1", status: "pending" } },
+  }).info.tone, "live");
   const regressionFailed = taskProgress({ ...regression, error: "回归失败" }, null, false, delivery);
   assert.equal(regressionFailed.info.tone, "bad");
   assert.deepEqual(regressionFailed.step, { index: 6, closed: false });

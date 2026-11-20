@@ -397,6 +397,7 @@ type ListedTask = TaskRow & {
   project_name: string;
   machine_name: string | null;
   lease_active: boolean;
+  deployment_pending: boolean;
   plan_phase: string | null;
   feedback_count: number;
 };
@@ -416,11 +417,16 @@ export async function listTasks(
     await db
       .prepare(
         `SELECT t.*, p.name AS project_name, m.name AS machine_name, plan.phase AS plan_phase,
+           COALESCE(CASE t.stage
+             WHEN 'preview_deploy' THEN delivery.state->'previewRun'->>'status'='pending'
+             WHEN 'production_deploy' THEN delivery.state->'productionRun'->>'status'='pending'
+           END, false) AS deployment_pending,
            EXISTS (SELECT 1 FROM leases l WHERE l.task_id=t.id AND l.daemon_id=t.machine_id AND l.released=0 AND l.expires_at>?) AS lease_active,
            (SELECT COUNT(*) FROM feedbacks f WHERE f.task_id=t.id)::int AS feedback_count
          FROM tasks t JOIN projects p ON p.id=t.project_id
          LEFT JOIN machines m ON m.id=t.machine_id
          LEFT JOIN task_plan_rounds plan ON plan.task_id=t.id AND plan.round=t.round
+         LEFT JOIN task_delivery delivery ON delivery.task_id=t.id AND delivery.round=t.round
          WHERE t.archived_at IS ${archived ? "NOT NULL" : "NULL"}${space}${access} ORDER BY t.created_at DESC LIMIT ?`,
       )
       .bind(now(), ...(spaceId ? [spaceId] : []), ...(userId !== undefined ? [userId] : []), limit)

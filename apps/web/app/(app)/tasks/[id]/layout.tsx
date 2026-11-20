@@ -11,14 +11,14 @@ import { DeliveryCard } from "@/components/task/delivery-card.tsx";
 import { Pipeline } from "@/components/task/pipeline.tsx";
 import { TaskActions } from "@/components/task/task-actions.tsx";
 import { ReviewCard } from "@/components/task/review-card.tsx";
-import { StatusPill } from "@/components/ui/badge.tsx";
+import { TaskStatusPill } from "@/components/task-list/task-status-pill.tsx";
 import { ErrorState, Skeleton } from "@/components/ui/states.tsx";
 import { RouteTabs } from "@/components/ui/route-tabs.tsx";
 import { TaskProvider } from "@/components/task/task-context.tsx";
 import { useToast } from "@/components/ui/toast.tsx";
 import { shortSha, timeAgo } from "@/lib/format.ts";
 import { fold } from "@/lib/session-fold.ts";
-import { canCancel, EFFORT_LABEL, hasLegacySessionTimeout, previousTaskStage, SESSION_STATE_LABEL, taskProgress } from "@/lib/status.ts";
+import { canCancel, EFFORT_LABEL, hasLegacySessionTimeout, previousTaskStage, SESSION_STATE_LABEL, taskPhase, taskProgress } from "@/lib/status.ts";
 import { useSession } from "@/lib/use-session.ts";
 import type { MachineItem } from "@/lib/types.ts";
 import { AgentName } from "@/components/agent/agent-icon.tsx";
@@ -84,6 +84,8 @@ function TaskWorkspace({ id, children }: { id: string; children: ReactNode }) {
     progress.activity = { label: "会话暂未同步", spinning: false };
   }
   const { info } = progress;
+  const phase = taskPhase(task.stage, data.delivery?.planPhase);
+  const running = !error && info.tone === "live";
   const returnTo = data.delivery ? null : previousTaskStage(task.stage, !!task.merge_sha, !!task.head_sha);
   const returnLabel = returnTo === "reviewing" ? "审核" : "开发";
   const rewindQueued = data.pending.some((item) => item.kind === "rewind");
@@ -106,7 +108,7 @@ function TaskWorkspace({ id, children }: { id: string; children: ReactNode }) {
           <TaskActions task={task} reload={reload} onCancel={canCancel(task.stage) ? () => setCancelling(true) : undefined} />
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] text-ink-2">
-          <StatusPill tone={info.tone}>{info.label}</StatusPill>
+          <TaskStatusPill key={info.label} info={info} phase={phase} running={running} />
           {task.archived_at && <span>已归档</span>}
           <span className="inline-flex min-w-0 items-center gap-1.5">
             <AgentName kind={task.agent} size={15} />
@@ -150,7 +152,7 @@ function TaskWorkspace({ id, children }: { id: string; children: ReactNode }) {
 
       <div className="mb-4 flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-y border-line py-2 sm:mb-5">
         <div className="min-w-0 flex-1 basis-52">
-          <Pipeline position={progress.step} tone={info.tone} delivery={!!data.delivery} />
+          <Pipeline position={progress.step} tone={info.tone} delivery={!!data.delivery} running={running} />
         </div>
         {returnTo && <Button size="sm" variant="ghost" className="ml-auto" disabled={rewindQueued} onClick={() => setRewinding(true)}>
           <Undo2 className="size-3.5" aria-hidden /> {rewindQueued ? "发布结束后回退" : `回退到${returnLabel}`}

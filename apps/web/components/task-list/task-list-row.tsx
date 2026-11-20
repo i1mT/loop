@@ -4,21 +4,23 @@ import Link from "next/link";
 import { AgentName } from "@/components/agent/agent-icon.tsx";
 import { Chip } from "@/components/ui/badge.tsx";
 import { timeAgo } from "@/lib/format.ts";
-import { isTaskExecuting } from "@/lib/status.ts";
+import { isTaskExecuting, listedTaskStageInfo, taskPhase } from "@/lib/status.ts";
 import type { TaskItem } from "@/lib/types.ts";
 import { TaskStatusPill } from "./task-status-pill.tsx";
 
 export function TaskListRow({ task, showProject, className }: { task: TaskItem; showProject?: boolean; className?: string }) {
   const executing = isTaskExecuting(task);
+  const info = listedTaskStageInfo(task);
+  const phase = taskPhase(task.stage, task.plan_phase);
   const machine = task.machine_name || task.machine_id;
   return (
     <Link
       href={`/tasks/${task.id}`}
-      className={clsx("group relative grid min-w-0 flex-1 grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1.5 py-3 pr-4 pl-2 sm:grid-cols-[9rem_minmax(0,1fr)_auto]", className)}
+      className={clsx("task-list-row group relative isolate grid min-w-0 flex-1 grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1.5 py-3 pr-4 pl-2 sm:grid-cols-[9rem_minmax(0,1fr)_auto]", className)}
       data-executing={executing || undefined}
+      data-task-phase={phase}
     >
-      {executing && <span aria-hidden className="absolute inset-y-3 left-0 w-0.5 rounded-full bg-signal" />}
-      <div><TaskStatusPill task={task} /></div>
+      <div key={info.label}><TaskStatusPill info={info} phase={phase} running={executing} /></div>
       <time className="num col-start-2 text-right text-xs text-ink-3 sm:col-start-3 sm:row-start-1" dateTime={new Date(task.updated_at).toISOString()}>
         {timeAgo(task.updated_at)}
       </time>
