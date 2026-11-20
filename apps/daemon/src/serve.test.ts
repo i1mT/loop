@@ -176,14 +176,20 @@ test("重试发布时，未加入开发循环的原会话也实时回传输出",
   }
 });
 
-for (const preview of [false, true]) {
-  test(preview ? "原会话补充测试结论，失败后请求修复" : "重启后在原会话测试生产环境，并回传回归结论", async () => {
+for (const scenario of ["production", "preview-failed", "text-only", "cli"] as const) {
+  const preview = scenario !== "production";
+  test(`原会话提交环境测试结论：${scenario}`, async () => {
     const forge = new FakeForge();
     const dataDir = tempDir("loopd-regression-");
     const repo = await forge.ensureCheckout({ githubRepo: "example/demo", dataDir });
     const sha = git(repo, "rev-parse", "HEAD").trim();
     if (preview) git(repo, "push", "origin", "HEAD:dev");
-    const specs = { fake: { ...FAKE_SPEC, env: { FAKE_DELIVERY: "1", ...(preview ? { FAKE_PREVIEW_FAILURE: "1" } : {}) } } };
+    const specs = { fake: { ...FAKE_SPEC, env: {
+      FAKE_DELIVERY: "1",
+      ...(scenario === "preview-failed" ? { FAKE_PREVIEW_FAILURE: "1" } : {}),
+      ...(scenario === "text-only" ? { FAKE_TEST_TEXT_ONLY: "1" } : {}),
+      ...(scenario === "cli" ? { FAKE_TEST_CLI: "1", FAKE_RESUME_ONLY: "1" } : {}),
+    } } };
     const daemon = new LoopDaemon({ dataDir, specs });
     const sid = await daemon.start({ taskId: "regression", repo, agent: "fake", prompt: "你好", mainRef: "origin/main" });
     await daemon.waitFor(sid);
@@ -192,7 +198,7 @@ for (const preview of [false, true]) {
     const controller = new AbortController();
     const environment = { url: "https://example.com", username: "tester", password: "fixture password", workflow: "deploy.yml" };
     let claimed = false;
-    let result: { next: string; state: { productionResult?: string; previewPassed?: boolean }; repair?: string } | undefined;
+    let result: { next: string; state: { productionResult?: string; previewPassed?: boolean }; repair?: string; error?: string } | undefined;
     const server = createServer(async (req, res) => {
       let payload: unknown = { ok: true };
       if (req.url === "/api/daemon/claim") {
@@ -220,12 +226,26 @@ for (const preview of [false, true]) {
     try {
       const { port } = server.address() as { port: number };
       await serve({ gateway: `http://127.0.0.1:${port}`, token: "fixture", daemonId: "fixture", dataDir, specs, forge, tickMs: 10, signal: controller.signal, log: () => {} });
-      assert.equal(result?.next, preview ? "running" : "published");
-      if (preview) {
-        assert.equal(result?.state.previewPassed, false);
-        assert.match(result?.repair ?? "", /预览字号仍不正确/);
-      } else {
-        assert.match(result?.state.productionResult ?? "", /已执行环境测试/);
+      assert.ok(result);
+      switch (scenario) {
+        case "preview-failed":
+          assert.equal(result.next, "running");
+          assert.equal(result.state.previewPassed, false);
+          assert.match(result.repair ?? "", /预览字号仍不正确/);
+          break;
+        case "text-only":
+          assert.equal(result.next, "preview_test");
+          assert.equal(result.state.previewPassed, false);
+          assert.match(result.error ?? "", /没有调用工具/);
+          break;
+        case "cli":
+          assert.equal(result.next, "production_review");
+          assert.equal(result.state.previewPassed, true);
+          break;
+        case "production":
+          assert.equal(result.next, "published");
+          assert.match(result.state.productionResult ?? "", /已执行环境测试/);
+          break;
       }
     } finally {
       clearTimeout(timer);

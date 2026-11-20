@@ -2,7 +2,8 @@
 // - 工作：领取任务 → 在本地跑智能体 → 回传事件与当前提交 → 取回人的回复与回答
 // - 发布：领取已批准的任务 → 同步主分支 → 确认仍是审核过的提交 → 以 SHA 执行发布命令 → 回传结果
 // 网关只通过 HTTP 交互（docs/contracts/daemon-protocol.md）；令牌只从环境变量读取，不写入仓库。
-import { advanceDelivery, parseEnvironmentTest, type DeliveryStep } from "./delivery.ts";
+import { advanceDelivery, type DeliveryStep } from "./delivery.ts";
+import { runEnvironmentTest } from "./delivery-tools/run-test.ts";
 import { DAEMON_CAPABILITIES, compareDaemonVersions, isDeliveryStage, type DeliverySettings, type DeliveryState, type ReleaseTask } from "@loop/core";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -1235,25 +1236,7 @@ async function runDelivery(ctx: Ctx, claim: Claim, lease: PublishLease): Promise
         const result = await runShell(command, wt.path, TEST_TIMEOUT_MS);
         if (result.code !== 0 || result.timedOut) throw new Error(`同步 dev 后项目测试失败：${tail(result.output, 1500)}`);
       },
-      test: async (prompt) => {
-        const result = await runPublishInSession(ctx.d, sid, prompt, PUBLISH_TIMEOUT_MS, { resetWaiting: true });
-        if (result.state !== "idle") {
-          await ctx.d.cancel(sid, { local: true }).catch(() => undefined);
-          return { verdict: "blocked", output: result.reply || "环境测试会话中断，请查看会话后重试。" };
-        }
-        const parsed = parseEnvironmentTest(result.reply);
-        if (parsed.verdict !== "unclear" || lease.lost) return parsed;
-        const clarified = await runPublishInSession(ctx.d, sid,
-          "请根据刚完成的测试报告补充结论。无需重新执行测试。最后一行写「测试结果：通过」「测试结果：失败」或「测试结果：受阻」。信息不足时说明还需要什么。",
-          PUBLISH_TIMEOUT_MS,
-        );
-        const verdict = parseEnvironmentTest(clarified.reply);
-        if (clarified.state !== "idle") {
-          await ctx.d.cancel(sid, { local: true }).catch(() => undefined);
-          return { verdict: "blocked", output: [parsed.output, verdict.output].filter(Boolean).join("\n\n") || "测试结论补充中断，请查看会话后重试。" };
-        }
-        return { ...verdict, output: [parsed.output, verdict.output].filter(Boolean).join("\n\n") };
-      },
+      test: (prompt) => runEnvironmentTest(ctx.d, sid, prompt, PUBLISH_TIMEOUT_MS, () => !lease.lost),
     });
     if (step.repair && !step.repairProduction && step.state.previewMerge === null) {
       await forge.fetch(meta.repo);

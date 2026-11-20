@@ -1,6 +1,6 @@
 {
   "name": "@loop/daemon",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,6 +14,7 @@
     "@agentclientprotocol/sdk": "^2.0.0",
     "@deepseek-ai/dsh": "0.2.1-rc.2",
     "@loop/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "pi-acp": "0.0.34",
     "proper-lockfile": "^4.1.2"
   },

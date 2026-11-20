@@ -11,9 +11,33 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { REPORT_TOOL, type TestReport } from "../delivery-tools/result.ts";
 
 const cwds = new Map<string, string>();
 const cancelled = new Set<string>();
+const servers = new Map<string, acp.LoadSessionRequest["mcpServers"]>();
+
+async function reportTest(sessionId: string, input: TestReport): Promise<void> {
+  const server = servers.get(sessionId)?.find((entry) => entry.name === "loop");
+  if (!server || !("command" in server)) throw new Error("Loop 测试工具没有注入到原会话");
+  if (process.env.FAKE_TEST_CLI) {
+    execFileSync(server.command, [...server.args, "submit", input.verdict, input.summary]);
+    return;
+  }
+  const transport = new StdioClientTransport({ command: server.command, args: server.args });
+  const mcp = new McpClient({ name: "fake-agent", version: "1.0.0" });
+  try {
+    await mcp.connect(transport);
+    const { tools } = await mcp.listTools();
+    if (!tools.some((tool) => tool.name === REPORT_TOOL)) throw new Error("找不到结果工具");
+    const result = await mcp.callTool({ name: REPORT_TOOL, arguments: { ...input } });
+    if (result.isError) throw new Error(JSON.stringify(result.content));
+  } finally {
+    await mcp.close();
+  }
+}
 const OPTIONS = [
   { optionId: "allow", name: "允许", kind: "allow_once" },
   { optionId: "reject", name: "拒绝", kind: "reject_once" },
@@ -53,15 +77,21 @@ async function runPrompt(sessionId: string, text: string, client: Client): Promi
     }
     if (text.includes("环境流水线已成功") && text.includes("fixture password")) {
       if (process.env.FAKE_PRODUCTION_REPAIR && text.startsWith("生产") && !existsSync(join(cwd, "production-fix.txt"))) {
-        await say(client, sessionId, "生产回归发现功能异常。\n测试结果：失败");
+        await reportTest(sessionId, { verdict: "failed", summary: "生产回归发现功能异常。" });
+        await say(client, sessionId, "已经通过工具提交生产回归结果。");
         return { stopReason: "end_turn" };
       }
-      const output = process.env.FAKE_PREVIEW_FAILURE ? "已执行环境测试，预览字号仍不正确。" : "已执行环境测试。\n测试结果：通过";
-      await say(client, sessionId, output);
+      if (!process.env.FAKE_TEST_TEXT_ONLY && !process.env.FAKE_PREVIEW_FAILURE) {
+        await reportTest(sessionId, { verdict: "passed", summary: "已执行环境测试。" });
+      }
+      await say(client, sessionId, "环境测试完成。\n测试结果:通过");
       return { stopReason: "end_turn" };
     }
-    if (process.env.FAKE_PREVIEW_FAILURE && text.includes("根据刚完成的测试报告补充结论")) {
-      await say(client, sessionId, "测试结果:失败");
+    if (text.includes("请提交刚完成的测试结论")) {
+      if (process.env.FAKE_PREVIEW_FAILURE) {
+        await reportTest(sessionId, { verdict: "failed", summary: "预览字号仍不正确。" });
+      }
+      await say(client, sessionId, "测试结果:通过");
       return { stopReason: "end_turn" };
     }
   }
@@ -165,10 +195,12 @@ const app = acp
   .onRequest("session/resume", async ({ params }) => {
     if (!process.env.FAKE_RESUME_ONLY) throw new Error("resume 不可用");
     cwds.set(params.sessionId, params.cwd);
+    servers.set(params.sessionId, params.mcpServers ?? []);
     return {};
   })
   .onRequest("session/load", async ({ params, client }) => {
     cwds.set(params.sessionId, params.cwd);
+    servers.set(params.sessionId, params.mcpServers);
     // 模拟历史重放：守护进程必须丢弃它
     await say(client as unknown as Client, params.sessionId, "（历史重放）");
     return {};

@@ -18,19 +18,6 @@ export interface EnvironmentTestResult {
   output: string;
 }
 
-export function parseEnvironmentTest(reply: string): EnvironmentTestResult {
-  const lines = reply.trim().split(/\r?\n/);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    const match = /^(?:>\s*)?(?:[-•]\s+)?[*_`]*测试结果[*_`]*\s*[:：]\s*[*_`]*(通过|失败|受阻)[*_`]*\s*(?:[。.!！]|[（(](.*)[）)])?[*_`]*$/.exec(line);
-    if (!match) continue;
-    const [, result, detail] = match;
-    const output = [...lines.slice(0, i), ...lines.slice(i + 1), detail].filter(Boolean).join("\n").trim();
-    return { verdict: result === "通过" ? "passed" : result === "失败" ? "failed" : "blocked", output: output || `测试结果：${result}` };
-  }
-  return { verdict: "unclear", output: reply.trim() };
-}
-
 interface DeliveryContext {
   stage: DeliveryStage;
   state: DeliveryState;
@@ -121,7 +108,7 @@ export async function advanceDelivery(ctx: DeliveryContext): Promise<DeliverySte
       return requestRepair(ctx, branch === "dev" ? "preview" : "production", sha, result.output, data);
     }
     if (result.verdict !== "passed") {
-      const reason = result.verdict === "unclear" ? "智能体未能确认测试结论。请查看会话后重试。" : result.output;
+      const reason = result.verdict === "unclear" ? "智能体没有调用工具提交测试结论。请查看会话后重试。" : result.output;
       return step(stage, data, { error: reason });
     }
     return step(preview ? "production_review" : "published", data);
@@ -263,6 +250,6 @@ function environmentPrompt(preview: boolean, env: TestEnvironment, sha: string) 
   return [
     `${preview ? "预览" : "生产"}环境流水线已成功，版本 ${sha}。请按 AGENTS.md 和项目文档执行${preview ? "预览测试" : "生产回归测试"}。本轮只测试，修复、提交和发布由后续流程处理。`,
     JSON.stringify({ url: env.url, username: env.username, password: env.password }),
-    "说明测试步骤和结果，最后一行写「测试结果：通过」「测试结果：失败」或「测试结果：受阻」。代码问题写失败，并说明如何复现和建议的修复。确实无法完成测试时写受阻，并说明需要什么才能继续。"
+    "完成项目要求的验证后提交结论。确认所需检查通过才提交 passed。属于代码问题时提交 failed，并说明如何复现。确实无法完成必要验证时提交 blocked，并说明需要什么。摘要不要包含登录凭证。"
   ].join("\n\n");
 }

@@ -3,7 +3,7 @@ import test from "node:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DeploymentRun, DeliveryStage, DeliveryState, ReleaseTask } from "@loop/core";
-import { advanceDelivery, parseEnvironmentTest } from "./delivery.ts";
+import { advanceDelivery, type EnvironmentTestResult } from "./delivery.ts";
 import { FakeForge } from "./testing/fake-forge.ts";
 import { git, tempDir } from "./testing/fixtures.ts";
 import { createWorktree } from "./worktree.ts";
@@ -20,14 +20,6 @@ class DeploymentForge extends FakeForge {
     return this.runs.get(`${branch}:${sha}`) ?? null;
   }
 }
-
-test("测试结论兼容半角冒号和 Markdown，保留失败细节，缺结论时保留原报告", () => {
-  assert.deepEqual(parseEnvironmentTest("字号未达到 13px。\n\n测试结果:失败"), { verdict: "failed", output: "字号未达到 13px。" });
-  assert.equal(parseEnvironmentTest("**测试结果：通过**\r\n附录").verdict, "passed");
-  assert.deepEqual(parseEnvironmentTest("- 测试结果:受阻（缺少预览账号）"), { verdict: "blocked", output: "缺少预览账号" });
-  assert.deepEqual(parseEnvironmentTest("测了筛选框，字号不符"), { verdict: "unclear", output: "测了筛选框，字号不符" });
-  assert.equal(parseEnvironmentTest("测试结果：通过一部分").verdict, "unclear");
-});
 
 test("预览失败修复后重新合入 dev，通过才准备生产 PR", async () => {
   const forge = new DeploymentForge();
@@ -46,11 +38,11 @@ test("预览失败修复后重新合入 dev，通过才准备生产 PR", async (
   const settings = { preview: env, production: { ...env, url: "https://prod.example.com" } };
   const candidates: (ReleaseTask & { sha: string })[] = [{ id: "one", round: 1, title: "改动", sha: "" }];
   let currentPr = pub;
-  let reply = "字号仍不对。\n测试结果:失败";
+  let reply: EnvironmentTestResult = { verdict: "failed", output: "字号仍不对。" };
   const run = (stage: DeliveryStage, state: DeliveryState) => advanceDelivery({
     stage, state, settings, forge, githubRepo, repoDir, wt, prNumber: currentPr.pr.number, head: currentPr.head,
     candidates: async () => candidates, check: async () => {}, active: () => true,
-    test: async (prompt) => { tests.push(prompt); return parseEnvironmentTest(reply); },
+    test: async (prompt) => { tests.push(prompt); return reply; },
   });
   let previewMerge = (await run("preview_deploy", {})).state.previewMerge!;
   candidates[0].sha = previewMerge;
@@ -100,7 +92,7 @@ test("预览失败修复后重新合入 dev，通过才准备生产 PR", async (
   assert.equal((await run("preview_deploy", { previewMerge })).delay, true);
   forge.runs.set(`dev:${previewMerge}`, success);
   const retest = await run("preview_deploy", { previewMerge });
-  reply = "修复后复测通过。\n测试结果：通过";
+  reply = { verdict: "passed", output: "修复后复测通过。" };
   assert.equal((await run("preview_test", { ...retest.state, previewMerge })).next, "production_review");
   candidates[0].verification = "passed";
   const release = (await run("production_review", { previewMerge })).state.release!;
@@ -123,7 +115,7 @@ test("预览失败修复后重新合入 dev，通过才准备生产 PR", async (
   assert.equal(forge.mergeCalls, 3);
   assert.equal((await run("production_test", { ...prod, ...ready.state })).next, "published");
   assert.match(tests[2], /https:\/\/prod\.example\.com/);
-  reply = "生产回归异常。\n测试结果：失败";
+  reply = { verdict: "failed", output: "生产回归异常。" };
   const repairProduction = await run("production_test", { ...prod, ...ready.state });
   assert.equal(repairProduction.next, "running");
   assert.equal(repairProduction.repairProduction, true);

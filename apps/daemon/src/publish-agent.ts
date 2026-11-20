@@ -1,5 +1,6 @@
 // 发布：PR 合并后，把任务的工作树同步到合并后的主分支，再对原来的会话发一条“开始发布”的消息，
 // 由同一个智能体（它已经了解这次改动）按项目 AGENTS.md 自己发布。成败不由程序判断，交给人确认。
+import type { SessionMcpServers } from "./acp/agent-conn.ts";
 import { SessionWaitTimeout, type LoopDaemon } from "./daemon.ts";
 import type { SessionState } from "./store.ts";
 import { git, type Worktree } from "./worktree.ts";
@@ -56,10 +57,10 @@ export async function runPublishInSession(
   sid: string,
   prompt: string,
   timeoutMs: number,
-  options: { resetWaiting?: boolean } = {},
+  options: { resetWaiting?: boolean; mcpServers?: SessionMcpServers } = {},
 ): Promise<PublishRun> {
   const wasLive = d.isLive(sid);
-  if (!wasLive) await d.resume(sid);
+  if (!wasLive) await d.resume(sid, options.mcpServers);
   const settled: SessionState[] = ["idle", "needs_you", "failed", "cancelled", "crashed", "ended"];
   let before = await d.waitFor(sid, settled, 30_000).catch((error: unknown) => {
     if (error instanceof SessionWaitTimeout) throw new PublishUnavailableError("busy");
@@ -74,6 +75,7 @@ export async function runPublishInSession(
     before = await d.waitFor(sid, ["idle"], 10_000);
   }
   if (before.state !== "idle") throw new PublishUnavailableError(before.state);
+  if (wasLive && options.mcpServers?.length) await d.attachSessionTools(sid, options.mcpServers);
   const mark = d.store.lastSeq(sid);
   d.reply(sid, prompt);
   const state = await d.waitFor(sid, settled, timeoutMs, { whileOutputContinues: true })

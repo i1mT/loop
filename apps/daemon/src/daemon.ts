@@ -8,6 +8,7 @@ import {
   AgentConn,
   type AgentSpec,
   type PermissionAnswer,
+  type SessionMcpServers,
 } from "./acp/agent-conn.ts";
 import { BUILTIN_SPECS } from "./agents.ts";
 import { decide } from "./policy.ts";
@@ -482,7 +483,7 @@ export class LoopDaemon extends EventEmitter {
   }
 
   /** 恢复：新进程加载旧会话（P-19 重放已过滤），状态回到 idle */
-  async resume(id: string): Promise<void> {
+  async resume(id: string, mcpServers?: SessionMcpServers): Promise<void> {
     const meta = this.store.getMeta(id);
     if (!meta?.externalId) throw new Error("该会话没有可恢复的智能体会话");
     if (this.live.has(id)) return;
@@ -492,7 +493,15 @@ export class LoopDaemon extends EventEmitter {
       base: meta.base,
     };
     const conn = await this.open(id, this.spec(meta.agent), wt);
-    await conn.restoreSession(meta.externalId, meta.cwd);
+    try {
+      await conn.restoreSession(meta.externalId, meta.cwd, mcpServers);
+    } catch (error) {
+      const live = this.live.get(id)!;
+      live.closing = true;
+      await conn.close();
+      this.live.delete(id);
+      throw error;
+    }
     await this.applyConfig(
       id,
       conn,
@@ -505,6 +514,20 @@ export class LoopDaemon extends EventEmitter {
     if (meta.state === "needs_you" || meta.state === "crashed")
       this.setState(id, "needs_you", "恢复后等待你的回复");
     else this.setState(id, "idle", "已恢复");
+  }
+
+  /** ACP 在恢复会话时接收工具配置。只在上一轮结束后更换连接。 */
+  async attachSessionTools(id: string, mcpServers: SessionMcpServers): Promise<void> {
+    const live = this.live.get(id);
+    if (live) {
+      await live.turn;
+      if (live.turn || live.pending.size || this.store.getMeta(id)?.state !== "idle")
+        throw new Error("原会话正忙，无法挂载测试工具");
+      live.closing = true;
+      await live.conn.close();
+      this.live.delete(id);
+    }
+    await this.resume(id, mcpServers);
   }
 
   /** 人明确要求重试发布：清除重启留下的 crashed/needs_you，让发布会话从空闲开始。 */

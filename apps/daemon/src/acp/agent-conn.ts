@@ -24,6 +24,8 @@ export interface AgentCaps {
   resumeSession: boolean;
 }
 
+export type SessionMcpServers = acp.LoadSessionRequest["mcpServers"];
+
 export type PermissionAnswer = { optionId: string } | "cancelled";
 
 export interface OpenOptions {
@@ -123,19 +125,19 @@ export class AgentConn {
     return (res as { configOptions?: any[] }).configOptions;
   }
 
-  async loadSession(sessionId: string, cwd: string): Promise<void> {
+  async loadSession(sessionId: string, cwd: string, mcpServers: SessionMcpServers = []): Promise<void> {
     this.replaying.add(sessionId);
     try {
-      await this.cx.request("session/load", { sessionId, cwd, mcpServers: [] });
+      await this.cx.request("session/load", { sessionId, cwd, mcpServers });
     } finally {
       this.replaying.delete(sessionId);
     }
   }
 
   /** 恢复旧会话：优先 session/load（会重放历史，已过滤）；只支持 session/resume 的智能体（dsh）走后者，它不重放 */
-  async restoreSession(sessionId: string, cwd: string): Promise<void> {
-    if (this.caps.loadSession || !this.caps.resumeSession) return this.loadSession(sessionId, cwd);
-    await this.cx.request("session/resume", { sessionId, cwd, mcpServers: [] });
+  async restoreSession(sessionId: string, cwd: string, mcpServers: SessionMcpServers = []): Promise<void> {
+    if (this.caps.loadSession || !this.caps.resumeSession) return this.loadSession(sessionId, cwd, mcpServers);
+    await this.cx.request("session/resume", { sessionId, cwd, mcpServers });
   }
 
   /** 发送一轮 prompt，返回 stopReason */

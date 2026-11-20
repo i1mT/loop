@@ -98,6 +98,8 @@
 
 `POST /api/daemon/leases/:id/delivery` 接受 `daemonId`、`round`、`stage`、`next`、`state` 以及可选失败原因、重试间隔和修复消息。网关校验当前轮次和租约，保存进度并结清本步租约。`{daemonId,candidates:true}` 返回当前项目待归入生产 PR/MR 的任务和预览合并提交，daemon 依据 Git 历史判断包含关系。
 
+预览测试和生产回归在恢复原 ACP 会话时挂载 `report_environment_test`。智能体提交 `verdict`（`passed`、`failed`、`blocked`）和非空 `summary`。适配器未展示该工具时可用提示里的命令行入口。聊天报告供人查看，只有工具提交会作为测试结论。每次测试使用独立入口，守护进程继续用同一交付接口回传，网关按当前阶段、轮次和租约保存。旧版因无法识别预览结论而停住的任务支持重新领取并测试。
+
 ### daemon 兼容性
 
 daemon 启动时通过 `hello` 上报版本，空闲时随领取请求、工作时随租约心跳继续上报。网关在领取响应中返回推荐版本，取自该次网关构建使用的 `apps/daemon/package.json`。机器列表和详情对低于推荐版本的机器显示更新提示，版本比较使用主、次和修订号。旧版仅通过 `hello` 上报的版本同样生效。
