@@ -1,3 +1,4 @@
+import type { DeliveryState } from "@loop/core";
 // 会话事件的纯折叠逻辑（无 React 依赖，便于单元测试）
 
 export interface Ev {
@@ -16,9 +17,10 @@ export interface Pending {
 }
 
 export interface SessionResponse {
+  delivery?: { state: DeliveryState; planPhase: string | null } | null;
   ok: boolean;
   task: import("./types.ts").TaskItem;
-  project: import("./types.ts").ProjectItem | null;
+  project: Pick<import("./types.ts").ProjectItem, "id" | "name" | "github_repo"> | null;
   stage: string;
   session: { id: string; agent: string; state: string; updated_at?: number } | null;
   leaseActive?: boolean;

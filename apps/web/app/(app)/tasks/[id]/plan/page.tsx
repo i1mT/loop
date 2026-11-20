@@ -53,13 +53,13 @@ export default function TaskPlanPage() {
     setBusy(true); setEditError(null);
     try {
       await apiPost(`/api/tasks/${id}/technical-plan`, editing);
-      setEditing(null); result.reload(); reload(); toast("ok", "修订已经提交，正在重新保存到飞书");
+      setEditing(null); result.reload(); reload(); toast("ok", "修订已经提交，正在重新保存");
     } catch (error) { setEditError(error instanceof ApiError ? error.message : "提交修订失败，请稍后重试"); }
     finally { setBusy(false); }
   }
   if (result.loading) return <div className="grid gap-4 pt-5" role="status" aria-label="加载技术方案"><Skeleton className="h-10" /><Skeleton className="h-64" /></div>;
   if (!result.data) return <ErrorState message={result.error?.message ?? "无法读取技术方案"} onRetry={result.reload} />;
-  if (!plan) return <EmptyState icon={<FileText className="size-5" />} title="还没有技术方案">启用飞书技术方案记录后，新任务会先分析代码并保存方案。任务开始前，可以在空间设置中完成配置。</EmptyState>;
+  if (!plan) return <EmptyState icon={<FileText className="size-5" />} title="还没有技术方案">新交付流程会在任务开始时生成技术方案。</EmptyState>;
   const historical = latest && key(latest) !== key(plan);
   const canRevise = !historical && (plan.phase === "awaiting_review" || (plan.phase === "syncing" && !!plan.syncError));
   const recordErrors = (result.data.records ?? []).filter((record) => record.syncError);
@@ -68,7 +68,7 @@ export default function TaskPlanPage() {
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4"><div className="w-full max-w-[240px]"><Picker value={key(plan)} onChange={setSelected} ariaLabel="选择方案版本" options={plans.map((item) => ({ value: key(item), label: `第 ${item.round} 轮 · 版本 ${item.revision}${latest && key(item) === key(latest) ? "（最新）" : ""}` }))} /></div><span className="text-xs text-ink-3">更新于 {timeAgo(plan.updatedAt)}</span></div>
     {canRevise && <div className="flex flex-wrap items-center justify-between gap-3 rounded-control bg-sunken px-3 py-2.5"><p className="text-[13px] text-ink-2">需要调整方案时，可以提交修订。新版本会重新保存，需要审核的任务会等待你批准。</p><Button size="sm" onClick={() => { setEditError(null); setEditing({ revision: plan.revision, markdown: plan.markdown }); }}><Pencil className="size-3.5" />修订方案</Button></div>}
     {historical && <p className="rounded-control bg-sunken px-3 py-2 text-[13px] text-ink-2">当前查看的是历史方案，本轮执行以最新版本为准。</p>}
-    {plan.syncError && <div className="grid gap-3"><InlineError>技术方案没有完整保存到飞书：{plan.syncError}</InlineError>{!historical && <div><Button size="sm" loading={busy} onClick={() => void retry()}><RefreshCw className="size-3.5" />重新保存到飞书</Button></div>}</div>}
+    {plan.syncError && <div className="grid gap-3"><InlineError>技术方案尚未保存：{plan.syncError}</InlineError>{!historical && <div><Button size="sm" loading={busy} onClick={() => void retry()}><RefreshCw className="size-3.5" />重新保存</Button></div>}</div>}
     {recordErrors.map((record) => <div key={`${record.round}:${record.kind}`} className="grid gap-2"><InlineError>第 {record.round} 轮{record.kind === "publish" ? "发布结果" : "实际改动记录"}尚未保存到飞书：{record.syncError}</InlineError><div><Button size="sm" loading={busy} onClick={() => void retry()}>重新保存记录</Button></div></div>)}
     {result.error && <InlineError>刷新失败：{result.error.message}</InlineError>}
     {plan.title && <h3 className="min-w-0 break-words text-base font-semibold">{plan.title}</h3>}

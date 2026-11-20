@@ -34,6 +34,24 @@ async function ask(client: Client, sessionId: string, toolCall: Record<string, u
 async function runPrompt(sessionId: string, text: string, client: Client): Promise<{ stopReason: acp.StopReason }> {
   const cwd = cwds.get(sessionId) ?? process.cwd();
 
+  if (process.env.FAKE_DELIVERY === "1") {
+    if (text.includes("本轮要求：先形成技术方案")) {
+      const plan = ["背景", "目标", "技术实现", "改动点", "验证方式", "风险与回滚"]
+        .map((section) => `## ${section}\n说明在一次性仓库里的实现、验证与维护步骤。`).join("\n");
+      await say(client, sessionId, `<loop-technical-plan>\n# 交付流程验证\n${plan}\n</loop-technical-plan>`);
+      return { stopReason: "end_turn" };
+    }
+    if (text.includes("【Loop 方案执行")) {
+      writeFileSync(join(cwd, "delivery-fixture.txt"), "example\n");
+      await say(client, sessionId, "已完成一次性仓库的改动。");
+      return { stopReason: "end_turn" };
+    }
+    if (text.includes("环境流水线已成功") && text.includes("fixture password")) {
+      await say(client, sessionId, "已执行环境测试。\n测试结果：通过");
+      return { stopReason: "end_turn" };
+    }
+  }
+
   const w = text.match(/write:([^:]+):(.*)/s);
   if (w) {
     const [, rel, content] = w;

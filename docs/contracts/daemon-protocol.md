@@ -91,3 +91,9 @@
 
 - 不再定时探测。守护进程启动后探测一次；用户在机器页点“刷新模型列表”时，网关记下请求（`machine_agents.probe_requested_at`），随下一次 `claim` 响应的 `probe: [agent]` 带给守护进程，守护进程探测后用 `hello` 上报（成功带 `models/efforts`，失败带 `probeError`），网关据此结清请求并记录 `models_at`。
 - 模型与思考程度的配置在 `machine_agents.default_model/default_effort`（`PATCH /api/machines/:id/agents/:kind`）；项目没有模型字段，任务创建时记录当时的配置。
+
+## dev 与 main 交付
+
+声明 `capabilities.delivery=true` 的守护进程可接收新交付轮次。开发使用 `mainRef=dev`。`job=delivery` 返回当前节点、持久进度和项目环境配置。
+
+`POST /api/daemon/leases/:id/delivery` 接受 `daemonId`、`round`、`stage`、`next`、`state` 以及可选失败原因、重试间隔和修复消息。网关校验当前轮次和租约，保存进度并结清本步租约。`{daemonId,candidates:true}` 返回当前项目待归入生产 PR/MR 的任务和预览合并提交，daemon 依据 Git 历史判断包含关系。

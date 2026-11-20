@@ -1,5 +1,5 @@
 // 状态词典：任务阶段 → 文案、色调、分组、提示。任务列表、详情、侧边栏共用，只在这里定义。
-import { canTransition, TERMINAL, type Stage } from "@loop/core";
+import { canTransition, isDeliveryStage, TERMINAL, type Stage } from "@loop/core";
 
 export type Tone = "idle" | "live" | "review" | "ok" | "bad" | "warn";
 export type Group = "attention" | "review" | "active" | "done" | "closed";
@@ -24,6 +24,11 @@ export const STAGE_INFO: Record<Stage, StageInfo> = {
   approved: { label: "等待发布", tone: "idle", group: "active", hint: "审核已通过，等待执行机器领取" },
   publishing: { label: "发布中", tone: "live", group: "active", hint: "执行机器正在处理发布任务" },
   publish_review: { label: "待确认发布", tone: "review", group: "review", hint: "请确认线上的发布结果" },
+  preview_deploy: { label: "部署预览环境", tone: "live", group: "active", hint: "自动合入 dev 并等待部署流水线" },
+  preview_test: { label: "预览环境测试", tone: "live", group: "active", hint: "智能体正在验证预览环境" },
+  production_review: { label: "等待合入 main", tone: "review", group: "review", hint: "请查看这批改动并确认合入" },
+  production_deploy: { label: "部署生产环境", tone: "live", group: "active", hint: "合入 main 后等待部署流水线" },
+  production_test: { label: "生产环境回归测试", tone: "live", group: "active", hint: "生产已部署，智能体正在回归测试" },
   published: { label: "已发布", tone: "ok", group: "done", hint: "PR 已合并，发布完成" },
   rejected: { label: "已驳回", tone: "idle", group: "closed", hint: "已被驳回，不会再处理" },
   failed: { label: "失败", tone: "bad", group: "closed", hint: "执行失败，详情见检查与活动" },
@@ -63,7 +68,7 @@ export function previousTaskStage(stage: Stage, merged: boolean, hasHead: boolea
 
 export const resumesClosedTask = (s: Stage): boolean => s === "failed" || s === "rejected" || s === "cancelled";
 export const revisesReview = (s: Stage): boolean => s === "reviewing" || s === "approved" || s === "plan_reviewing";
-export const canDrainWorkInbox = (s: Stage): boolean => !TERMINAL.has(s) && s !== "publishing" && s !== "publish_review";
+export const canDrainWorkInbox = (s: Stage): boolean => !TERMINAL.has(s) && s !== "publishing" && s !== "publish_review" && !isDeliveryStage(s);
 /** 任务可以取消（由状态机决定） */
 export const canCancel = (s: Stage): boolean => canTransition(s, "cancelled");
 /** 发布环节与失败态：人可以手动改结果 */
@@ -83,6 +88,7 @@ export function hasLegacySessionTimeout(text?: string | null): boolean {
 }
 
 export function taskStageInfo(task: { stage: string; merge_sha?: string | null; error: string | null }): StageInfo {
+  if (isDeliveryStage(task.stage) && task.error) return { ...stageInfo(task.stage), tone: "bad", group: "attention", hint: task.error };
   if (isLegacyPublishTimeout(task)) return STAGE_INFO.publish_review;
   if (task.stage === "failed" && task.merge_sha) {
     return { ...STAGE_INFO.failed, label: "发布失败", hint: "代码已合并，本次发布未成功" };
@@ -100,6 +106,7 @@ export function taskProgress(
   task: { stage: Stage; merge_sha?: string | null; merged_at?: number | null; error: string | null },
   session: { state: string; updated_at?: number } | null,
   leaseActive: boolean,
+  delivery?: { planPhase: string | null },
 ): TaskProgress {
   let info = taskStageInfo(task);
   let step = pipelinePosition(task.stage);
@@ -121,6 +128,12 @@ export function taskProgress(
   } else if (task.stage === "needs_you") {
     activity = { label: "等待你的回复", spinning: false, waiting: true };
   }
+  if (delivery) {
+    step = deliveryPosition(task.stage, delivery.planPhase);
+    if (task.stage === "running" && step.index === 1 && leaseActive) {
+      info = { ...info, label: PLAN_PHASE_LABEL[delivery.planPhase ?? "analyzing"] ?? "技术方案" };
+    }
+  }
   return { info, step, activity };
 }
 
@@ -132,6 +145,24 @@ export const GROUP_LABEL: Record<Group, string> = {
   closed: "已结束",
 };
 export const GROUP_ORDER: Group[] = ["attention", "review", "active", "done", "closed"];
+
+export const DELIVERY_PIPELINE = ["排队", "技术方案", "开发", "合并 dev 部署预览环境", "在预览环境测试", "发布生产", "生产环境回归测试"] as const;
+
+export function deliveryPosition(stage: Stage, planPhase: string | null): TaskProgress["step"] {
+  switch (stage) {
+    case "plan_reviewing": return { index: 1, closed: false };
+    case "plan_approved":
+    case "running":
+    case "needs_you": return { index: planPhase === "implementing" ? 2 : 1, closed: false };
+    case "preview_deploy": return { index: 3, closed: false };
+    case "preview_test": return { index: 4, closed: false };
+    case "production_review":
+    case "production_deploy": return { index: 5, closed: false };
+    case "production_test": return { index: 6, closed: false };
+    case "published": return { index: 7, closed: false };
+    default: return pipelinePosition(stage);
+  }
+}
 
 export const PIPELINE = ["排队", "开发", "审核", "发布"] as const;
 

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { GitLabForge, parseRemoteUrl } from "./forge.ts";
+import { GitHubForge, GitLabForge, parseRemoteUrl } from "./forge.ts";
 
 test("解析远端地址：scp、ssh、http(s) 与本地路径", () => {
   assert.deepEqual(parseRemoteUrl("git@github.com:o/r.git"), {
@@ -128,7 +128,7 @@ test("自建 GitLab：建 MR、按提交合并、状态映射与关闭", async (
     number: 7,
     cwd: "/tmp",
   });
-  assert.deepEqual(info, { state: "MERGED", mergeSha: "merged1" });
+  assert.deepEqual(info, { state: "MERGED", mergeSha: "merged1", head: "head1" });
 
   await forge.closePr({
     githubRepo: "eval/Evaluation",
@@ -180,4 +180,41 @@ test("缺少 GITLAB_TOKEN 时给出可操作的错误", () => {
   } finally {
     if (saved !== undefined) process.env.GITLAB_TOKEN = saved;
   }
+});
+
+test("GitLab 部署流水线按分支、提交和 push 来源匹配", async () => {
+  const sha = "a".repeat(40);
+  const { calls, fetchImpl } = fakeGitLab({ "/pipelines?": { body: [
+    { id: 4, ref: "dev", sha, source: "merge_request_event", status: "success" },
+    { id: 3, ref: "dev", sha: "b".repeat(40), source: "push", status: "success" },
+    { id: 2, ref: "dev", sha, source: "push", web_url: "https://example.com/pipelines/2", status: "canceled" },
+  ] } });
+  const forge = new GitLabForge({ host: "git.example.com", token: "fixture", fetchImpl });
+  assert.deepEqual(await forge.pipeline({ githubRepo: "group/demo", branch: "dev", sha, workflow: "", cwd: "." }), {
+    id: "2", url: "https://example.com/pipelines/2", status: "cancelled",
+  });
+  const query = new URL(calls[0].url).searchParams;
+  assert.equal(query.get("ref"), "dev");
+  assert.equal(query.get("sha"), sha);
+  assert.equal(query.get("source"), "push");
+});
+
+
+test("GitHub 只以指定 workflow 的分支 push 结果推进部署", async () => {
+  const sha = "a".repeat(40);
+  const forge = new GitHubForge(async (command, args) => {
+    assert.equal(command, "gh");
+    const url = new URL(args[1], "https://example.com");
+    assert.equal(url.pathname, "/repos/example/demo/actions/workflows/deploy.yml/runs");
+    assert.equal(url.searchParams.get("event"), "push");
+    assert.equal(url.searchParams.get("branch"), "main");
+    assert.equal(url.searchParams.get("head_sha"), sha);
+    return JSON.stringify({ workflow_runs: [
+      { id: 3, head_branch: "main", head_sha: sha, event: "pull_request", status: "completed", conclusion: "success" },
+      { id: 2, head_branch: "main", head_sha: sha, event: "push", status: "in_progress", conclusion: null, html_url: "https://example.com/runs/2" },
+    ] });
+  });
+  assert.deepEqual(await forge.pipeline({ githubRepo: "example/demo", branch: "main", sha, workflow: "deploy.yml", cwd: "." }), {
+    id: "2", url: "https://example.com/runs/2", status: "pending",
+  });
 });

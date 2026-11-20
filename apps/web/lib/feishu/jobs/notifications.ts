@@ -93,6 +93,12 @@ const STAGE_NOTICES: Record<
     summary: "PR 已合并，智能体正在执行发布。",
     template: "blue",
   },
+  production_review: {
+    tag: "待人工处理",
+    heading: "等待合入生产",
+    summary: "预览测试已通过。请在 Loop 查看本批改动并确认合入 main。",
+    template: "orange",
+  },
   publish_review: {
     tag: "待人工处理",
     heading: "发布结果待确认",

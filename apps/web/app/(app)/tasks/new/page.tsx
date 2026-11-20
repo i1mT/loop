@@ -84,7 +84,7 @@ export default function NewTaskPage({ searchParams }: { searchParams: Promise<{ 
     setBusy(true);
     setError(null);
     try {
-      const r = await apiPost<{ task: TaskItem | null; pooled: { count: number; size: number } | null }>("/api/tasks", { projectId: chosen, title: title.trim(), body, planReview, releaseReview, agent: agentOverride || undefined, mergeable: !solo });
+      const r = await apiPost<{ task: TaskItem | null; pooled: { count: number; size: number } | null }>("/api/tasks", { projectId: chosen, title: title.trim(), body, planReview, releaseReview: project.delivery_settings ? true : releaseReview, agent: agentOverride || undefined, mergeable: !solo });
       mutate("/api/tasks");
       if (r.task) {
         toast("ok", "任务已创建");
@@ -149,7 +149,7 @@ export default function NewTaskPage({ searchParams }: { searchParams: Promise<{ 
         <div className="flex flex-wrap gap-x-5 gap-y-1 sm:ml-auto">
           <Checkbox checked={planReview} onChange={setPlanReview} label="先审核方案" />
           <Checkbox checked={solo} onChange={setSolo} label="单独处理，不参与合并" />
-          <Checkbox checked={releaseReview} onChange={setReleaseReview} label="需要发布审核" />
+          {project.delivery_settings ? <span className="text-ink-2">生产发布需人工合并</span> : <Checkbox checked={releaseReview} onChange={setReleaseReview} label="需要发布审核" />}
         </div>
       </div>
       <div className="min-h-0 flex-1">

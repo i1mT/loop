@@ -11,10 +11,12 @@ export function taskPlanInitialization(
   return db
     .prepare(
       `INSERT INTO task_plan_rounds(task_id,round,binding_id,wiki_url,updated_at)
-    SELECT ?,?,b.id,b.wiki_url,? FROM space_feishu_bindings b JOIN projects p ON p.space_id=b.space_id
-    WHERE p.id=? AND b.enabled=1 ON CONFLICT(task_id,round) DO NOTHING`,
+    SELECT ?,?,b.id,b.wiki_url,? FROM projects p
+    LEFT JOIN space_feishu_bindings b ON p.space_id=b.space_id AND b.enabled=1
+    WHERE p.id=? AND (b.id IS NOT NULL OR p.delivery_settings IS NOT NULL)
+      AND EXISTS (SELECT 1 FROM tasks t WHERE t.id=?) ON CONFLICT(task_id,round) DO NOTHING`,
     )
-    .bind(taskId, round, Date.now(), projectId);
+    .bind(taskId, round, Date.now(), projectId, taskId);
 }
 export async function initializeTaskPlan(
   db: Db,
@@ -145,7 +147,7 @@ export async function approveTechnicalPlan(
   const result = await stageChange(db, db.prepare(
       `WITH candidate AS (
     SELECT t.id,t.round FROM tasks t JOIN task_plan_rounds r ON r.task_id=t.id AND r.round=t.round
-    WHERE t.id=? AND t.stage='plan_reviewing' AND r.phase='awaiting_review' AND r.document_url IS NOT NULL
+    WHERE t.id=? AND t.stage='plan_reviewing' AND r.phase='awaiting_review' AND (r.binding_id IS NULL OR r.document_url IS NOT NULL)
     ${revision === undefined ? "" : "AND r.revision=?"} FOR UPDATE OF t,r
   ), approved AS (
     UPDATE task_plan_rounds r SET phase='implementing',approved_revision=revision,

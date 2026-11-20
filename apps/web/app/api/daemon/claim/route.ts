@@ -9,7 +9,8 @@ export async function POST(req: Request) {
   const body = await readJson<{
     daemonId?: string;
     holding?: string[];
-    capabilities?: { technicalPlan?: boolean };
+    delivering?: string[];
+    capabilities?: { technicalPlan?: boolean; delivery?: boolean };
   }>(req);
   if (!body?.daemonId) return fail(400, "需要 daemonId");
   const r = await claim(
@@ -18,6 +19,8 @@ export async function POST(req: Request) {
       ? body.holding.filter((x) => typeof x === "string")
       : [],
     body.capabilities?.technicalPlan === true,
+    body.capabilities?.delivery === true,
+    Array.isArray(body.delivering) ? body.delivering.filter((x) => typeof x === "string") : [],
   );
   // 随领取响应带回：用户在页面点了“刷新模型列表”的智能体
   return json({

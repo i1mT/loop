@@ -130,3 +130,50 @@ test("重试发布时，未加入开发循环的原会话也实时回传输出",
     await once(server, "close");
   }
 });
+
+test("重启后在原会话测试生产环境，并回传回归结论", async () => {
+  const forge = new FakeForge();
+  const dataDir = tempDir("loopd-regression-");
+  const repo = await forge.ensureCheckout({ githubRepo: "example/demo", dataDir });
+  const sha = git(repo, "rev-parse", "HEAD").trim();
+  const specs = { fake: { ...FAKE_SPEC, env: { FAKE_DELIVERY: "1" } } };
+  const daemon = new LoopDaemon({ dataDir, specs });
+  const sid = await daemon.start({ taskId: "regression", repo, agent: "fake", prompt: "你好", mainRef: "origin/main" });
+  await daemon.waitFor(sid);
+  await daemon.close();
+
+  const controller = new AbortController();
+  const environment = { url: "https://example.com", username: "tester", password: "fixture password", workflow: "deploy.yml" };
+  let claimed = false;
+  let result: { next: string; state: { productionResult: string } } | undefined;
+  const server = createServer(async (req, res) => {
+    let payload: unknown = { ok: true };
+    if (req.url === "/api/daemon/claim") {
+      payload = { claim: claimed ? null : { leaseId: "regression-lease", task: {
+        id: "regression", sessionId: sid, job: "delivery", githubRepo: "example/demo",
+        delivery: { stage: "production_test", settings: { preview: environment, production: environment }, state: { productionSha: sha } },
+      } } };
+      claimed = true;
+    } else if (req.url?.endsWith("/delivery")) {
+      const chunks: Buffer[] = [];
+      for await (const part of req) chunks.push(Buffer.from(part));
+      result = JSON.parse(Buffer.concat(chunks).toString());
+      controller.abort();
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(payload));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const { port } = server.address() as { port: number };
+    await serve({ gateway: `http://127.0.0.1:${port}`, token: "fixture", daemonId: "fixture", dataDir, specs, forge, tickMs: 10, signal: controller.signal, log: () => {} });
+    assert.deepEqual(result?.next, "published");
+    assert.match(result.state.productionResult, /已执行环境测试/);
+  } finally {
+    clearTimeout(timer);
+    server.close();
+    await once(server, "close");
+  }
+});

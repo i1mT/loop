@@ -72,3 +72,13 @@
 | `reviewing` / `approved` | 同名 |
 | `published` | `published` |
 | `missing` | 不再存在：不依赖外部 issue |
+
+## dev 预览与 main 生产交付
+
+启用项目环境设置后，新轮次展示排队、技术方案、开发、合并 dev 部署预览环境、在预览环境测试、发布生产和生产环境回归测试。
+
+- 方案可以保存到 Loop，启用飞书绑定时继续同步 Wiki。方案审批沿用项目任务已有选项。
+- 开发完成后进入 `preview_deploy`，合入 dev 并等待对应分支流水线成功。原会话在 `preview_test` 执行验证，失败时可回到开发修复。
+- 进入 `production_review` 后准备共享 `dev → main` PR/MR。Loop 记录用户点击合并时确认的 PR/MR 和源提交。之后进入 `production_deploy`，等待 main 流水线成功。
+- 同批任务可以从预览节点接收生产合并结果。`production_test` 使用生产链接和测试账号执行回归，通过后进入 `published`。出错时保留当前步骤、部署结果和重试入口。
+- 已开始的旧轮次继续沿用原状态路径。任务进入新轮次时使用项目当时的交付配置。

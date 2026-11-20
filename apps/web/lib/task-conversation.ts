@@ -42,13 +42,17 @@ async function updateConversation(task: TaskRow, action: "send" | ReturnStage | 
     WHERE task_id IN (SELECT id FROM moved) AND after_publish=1 AND ?
   ), released AS (
     UPDATE leases SET released=1 WHERE task_id IN (SELECT id FROM moved) AND released=0 AND ?
+  ), delivery AS (
+    INSERT INTO task_delivery(task_id,round,repo)
+    SELECT a.id,a.round,p.github_repo FROM moved a JOIN projects p ON p.id=a.project_id
+    WHERE a.round>? AND p.delivery_settings IS NOT NULL ON CONFLICT DO NOTHING
   ), plan AS (
     INSERT INTO task_plan_rounds(task_id,round,binding_id,wiki_url,updated_at)
     SELECT a.id,a.round,COALESCE(old.binding_id,b.id),COALESCE(old.wiki_url,b.wiki_url),?
     FROM moved a JOIN projects p ON p.id=a.project_id
     LEFT JOIN task_plan_rounds old ON old.task_id=a.id AND old.round=a.round-1
     LEFT JOIN space_feishu_bindings b ON b.space_id=p.space_id AND b.enabled=1
-    WHERE ? AND COALESCE(old.binding_id,b.id) IS NOT NULL ON CONFLICT(task_id,round) DO NOTHING
+    WHERE ? AND (COALESCE(old.binding_id,b.id) IS NOT NULL OR p.delivery_settings IS NOT NULL) ON CONFLICT(task_id,round) DO NOTHING
   ), revise_plan AS (
     UPDATE task_plan_rounds r SET phase='analyzing',revision=r.revision+1,approved_revision=NULL,
       continuation_id=NULL,sync_error=NULL,retry_at=0,locked_until=0,updated_at=?
@@ -61,7 +65,7 @@ async function updateConversation(task: TaskRow, action: "send" | ReturnStage | 
     resetPr, resetPr, resetPr, resetPr, round !== task.round, intoDevelopment || returned, action === "reviewing",
     task.id, stage, task.round, action === "after-publish",
     text ?? null, at, Number(stage === "publishing"), text ?? null,
-    at, stage !== "publishing", release, at, round !== task.round, at, stage === "plan_reviewing" && intoDevelopment,
+    at, stage !== "publishing", release, task.round, at, round !== task.round, at, stage === "plan_reviewing" && intoDevelopment,
     returned ? "rewind" : "iterate",
     round !== task.round ? `继续开发（第 ${round} 轮）${task.pr_url ? `，上一轮 PR：${task.pr_url}` : ""}` : detail,
     at, returned || round !== task.round,

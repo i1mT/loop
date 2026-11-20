@@ -4,7 +4,8 @@ import { readBindings, prepareBindings, bindingWrites, bindingAuthorization, typ
 import { projectAccessSql, projectManageSql } from "./routing/access.ts";
 import { dispatchInsert, dispatchAuthorization } from "./routing/dispatch.ts";
 // 任务：创建时一次定好全部属性；之后智能体只读（见 @loop/core 的 validateAgentPatch）。
-import type { Stage } from "@loop/core";
+import { parseDeliverySettings } from "./delivery-settings.ts";
+import type { DeliverySettings, Stage } from "@loop/core";
 import { getDb, newId, now } from "./db.ts";
 import { validateBinding } from "./machines.ts";
 import { DEFAULT_SPACE_ID, linkMachine } from "./spaces.ts";
@@ -57,6 +58,7 @@ export interface ProjectRow {
   canManage?: boolean;
   bindings?: ProjectBinding[];
   binding_revision?: number;
+  delivery_settings?: DeliverySettings | null;
   dispatch_cursor?: number;
   id: string;
   name: string;
@@ -155,6 +157,7 @@ export async function createProject(
 }
 
 export interface ProjectPatch {
+  deliverySettings?: DeliverySettings | null;
   bindings?: ProjectBinding[];
   name?: string;
   machineId?: string;
@@ -203,9 +206,10 @@ export async function updateProject(
   if (!githubRepo || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(githubRepo))
     throw new Error("GitHub 仓库格式应为 owner/name");
   const name = patch.name?.trim() || cur.name;
+  const delivery = patch.deliverySettings === undefined ? cur.delivery_settings ?? null : parseDeliverySettings(patch.deliverySettings);
   const update = db
     .prepare(
-      `UPDATE projects SET name=?, machine_id=?, agent=?, default_agent=?, instructions=?, main_ref=?, local_path=?, github_repo=?,binding_revision=binding_revision+1${changed?",dispatch_cursor=0":""} WHERE id=? AND binding_revision=?`,
+      `UPDATE projects SET name=?, machine_id=?, agent=?, default_agent=?, instructions=?, main_ref=?, local_path=?, github_repo=?,delivery_settings=?::jsonb,binding_revision=binding_revision+1${changed?",dispatch_cursor=0":""} WHERE id=? AND binding_revision=?`,
     )
     .bind(
       name,
@@ -216,12 +220,13 @@ export async function updateProject(
       patch.mainRef?.trim() || cur.main_ref,
       first?.localPath ?? null,
       githubRepo,
+      delivery === null ? null : JSON.stringify(delivery),
       id,
       cur.binding_revision ?? 0,
     );
   // 旧入口的顶层 agent 是项目公共设置；绑定行里的智能体/模型属于那台机器的配置，只按绑定权限检查。
   const legacyAgentChanged=patch.agent!==undefined&&patch.agent!==cur.agent;
-  const globalChanged=legacyAgentChanged || githubRepo!==cur.github_repo || name!==cur.name || instructions!==cur.instructions || (patch.mainRef?.trim()||cur.main_ref)!==cur.main_ref;
+  const globalChanged=patch.deliverySettings!==undefined || legacyAgentChanged || githubRepo!==cur.github_repo || name!==cur.name || instructions!==cur.instructions || (patch.mainRef?.trim()||cur.main_ref)!==cur.main_ref;
   const fullAuth=actorId!==undefined&&globalChanged?[db.prepare(`SELECT 1/CASE WHEN EXISTS(SELECT 1 FROM projects WHERE id=? AND ${projectManageSql()}) THEN 1 ELSE 0 END`).bind(id,actorId)]:[];
   const auth=actorId!==undefined ? [db.prepare(`SELECT 1/CASE WHEN EXISTS(SELECT 1 FROM projects WHERE id=? AND ${projectAccessSql()}) THEN 1 ELSE 0 END`).bind(id,actorId)] : [];
   // 配置版本守卫失败时回滚，不能用旧绑定集合覆盖其他成员的修改。
@@ -375,6 +380,9 @@ export async function createTask(
   });
   try {await db.batch([
     routingLock(db),dispatchAuthorization(db,project.id,input.agent,actorId),insertTask,
+    db.prepare(`INSERT INTO task_delivery(task_id,round,repo)
+      SELECT t.id,t.round,p.github_repo FROM tasks t JOIN projects p ON p.id=t.project_id
+      WHERE t.id=? AND p.delivery_settings IS NOT NULL`).bind(row.id),
     taskPlanInitialization(db,row.id,row.project_id,1),...(options.statements??[]),
   ]);}catch(error){
     if((error as {code?:string}).code==='22012')throw new Error("没有机器使用权限，或绑定机器没有安装所选智能体");

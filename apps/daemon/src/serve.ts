@@ -2,6 +2,8 @@
 // - 工作：领取任务 → 在本地跑智能体 → 回传事件与当前提交 → 取回人的回复与回答
 // - 发布：领取已批准的任务 → 同步主分支 → 确认仍是审核过的提交 → 以 SHA 执行发布命令 → 回传结果
 // 网关只通过 HTTP 交互（docs/contracts/daemon-protocol.md）；令牌只从环境变量读取，不写入仓库。
+import { advanceDelivery, type DeliveryStep } from "./delivery.ts";
+import { isDeliveryStage, type DeliverySettings, type DeliveryState } from "@loop/core";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -104,6 +106,7 @@ interface ActiveSession {
   /** 推送失败后的重试时间，避免每个轮询周期都重试 */
   retryAt: number;
   technicalPlan: boolean;
+  delivery: boolean;
   round: number;
 }
 
@@ -127,6 +130,7 @@ interface PublishLease {
   forwarded: number;
   lost: boolean;
   forwarding?: Promise<void>;
+  delivery?: boolean;
 }
 
 export class GatewayClient {
@@ -181,7 +185,9 @@ type Claim = {
     agent: string;
     sessionId: string | null;
     reattach: boolean;
-    job: "work" | "publish";
+    job: "work" | "publish" | "delivery";
+    headSha?: string;
+    delivery?: { stage: string; state: DeliveryState; settings: DeliverySettings | null };
     approvedSha: string | null;
     /** PR 合并提交：恢复后 PR 信息可能被清掉，有这个就能直接重试发布 */
     mergeSha: string | null;
@@ -277,8 +283,12 @@ export async function serve(opts: ServeOptions): Promise<void> {
       const reply = await gw.call("POST", `/api/daemon/leases/${p.leaseId}/heartbeat`, {
         daemonId: opts.daemonId,
       }).catch(() => null);
-      if (reply?.status === 409 && p.sessionId && !p.done) markLost(d, p.sessionId, p, log);
-      else if (reply?.status === 200) await forwardPublishEvents(ctx, p).catch(() => undefined);
+      const cancelled = p.delivery && reply?.status === 200 && (reply.data as { stage?: string }).stage === "cancelled";
+      if ((reply?.status === 409 || cancelled) && p.sessionId && !p.done) {
+        markLost(d, p.sessionId, p, log);
+      } else if (reply?.status === 200) {
+        await forwardPublishEvents(ctx, p).catch(() => undefined);
+      }
     }
   };
   const beatTimer = setInterval(() => void beat(), 15_000);
@@ -351,7 +361,8 @@ export async function serve(opts: ServeOptions): Promise<void> {
           probe?: string[];
         }>("POST", "/api/daemon/claim", {
           daemonId: opts.daemonId,
-          capabilities: { technicalPlan: true },
+          capabilities: { technicalPlan: true, delivery: true },
+          delivering: [...publishing.values()].filter((p) => !p.done).map((p) => p.taskId),
           holding: [
             ...[...active.values()].filter((a) => !a.lost).map((a) => a.taskId),
             ...[...publishing.values()]
@@ -364,7 +375,7 @@ export async function serve(opts: ServeOptions): Promise<void> {
         if (r.status === 200 && r.data.probe?.length)
           void probeAgents(r.data.probe);
         if (c && (!c.task.sessionId || !retiring.has(c.task.sessionId))) {
-          if (c.task.job === "publish") startPublish(ctx, c);
+          if (c.task.job === "publish" || c.task.job === "delivery") startPublish(ctx, c);
           else if (running() < concurrency || c.task.reattach)
             await startOrReattach(ctx, c);
           // 工作位已满且是新任务：不处理，租约会过期后由网关重新排队
@@ -473,8 +484,13 @@ export async function serve(opts: ServeOptions): Promise<void> {
               output: tail(r.output),
             },
           });
+          if (a.delivery && (r.code !== 0 || r.timedOut)) {
+            a.reportedHead = head;
+            d.reply(sid, `项目测试未通过。请修复、重新验证并提交改动。\n${tail(r.output, 3000)}`);
+            continue;
+          }
         }
-        if (cmds.preview) {
+        if (cmds.preview && !a.delivery) {
           const r = await runShell(cmds.preview, m.cwd, TEST_TIMEOUT_MS);
           d.store.append(sid, {
             kind: "check",
@@ -960,6 +976,7 @@ async function startOrReattach(ctx: Ctx, claim: Claim): Promise<void> {
     pr: t.prNumber && t.prUrl ? { number: t.prNumber, url: t.prUrl } : null,
     retryAt: 0,
     technicalPlan: !!t.technicalPlan?.required,
+    delivery: !!t.delivery,
     round: t.round ?? 1,
   };
   // 本进程已经在管理这个会话（每轮领取都会把自己持有的任务再返回一次）：只更新租约，不重置回传进度
@@ -1133,12 +1150,14 @@ function startPublish(ctx: Ctx, claim: Claim): void {
     forwarded: work?.forwarded ?? (t.sessionId ? ctx.d.store.lastSeq(t.sessionId) : -1),
     lost: false,
     done: false,
+    delivery: t.job === "delivery",
   };
   ctx.publishing.set(claim.leaseId, lease);
-  ctx.log(
-    `开始发布任务 ${t.id}（批准的提交 ${t.approvedSha?.slice(0, 8) ?? "无"}）`,
-  );
-  void runPublish(ctx, claim, lease).catch((error: unknown) => {
+  ctx.log(t.job === "delivery"
+    ? `任务 ${t.id} 进入 ${t.delivery?.stage}`
+    : `开始发布任务 ${t.id}（批准的提交 ${t.approvedSha?.slice(0, 8) ?? "无"}）`);
+  const run = t.job === "delivery" ? runDelivery(ctx, claim, lease) : runPublish(ctx, claim, lease);
+  void run.catch((error: unknown) => {
     ctx.log(`发布流程中断：${String(error)}`);
     return "failed" as const;
   }).then((outcome) => {
@@ -1151,6 +1170,64 @@ function startPublish(ctx: Ctx, claim: Claim): void {
       for (const [sid, a] of ctx.active)
         if (a.taskId === t.id) ctx.active.delete(sid);
   });
+}
+
+async function runDelivery(ctx: Ctx, claim: Claim, lease: PublishLease): Promise<"published" | "failed"> {
+  const t = claim.task;
+  const sid = t.sessionId;
+  const delivery = t.delivery;
+  if (!delivery || !isDeliveryStage(delivery.stage)) return "failed";
+  const stage = delivery.stage;
+  const route = `/api/daemon/leases/${claim.leaseId}/delivery`;
+  const auth = { daemonId: ctx.daemonId, round: t.round ?? 1, stage };
+  const meta = sid ? ctx.d.store.getMeta(sid) : null;
+  let step: DeliveryStep;
+  try {
+    if (!meta || !sid || !t.githubRepo || !delivery.settings) throw new Error("缺少原任务会话、仓库或项目环境设置");
+    const forge = await resolveForge(ctx, meta.repo);
+    const wt = { path: meta.cwd, branch: meta.branch, base: meta.base };
+    step = await advanceDelivery({
+      stage, state: delivery.state, settings: delivery.settings, forge, githubRepo: t.githubRepo,
+      repoDir: meta.repo, wt, prNumber: t.prNumber, head: t.headSha ?? null, active: () => !lease.lost,
+      candidates: async () => {
+        const result = await ctx.gw.call<{ tasks: { id: string; round: number; title: string; sha: string }[] }>("POST", route, { ...auth, candidates: true });
+        if (result.status !== 200) throw new Error("无法读取当前待发布的任务");
+        return result.data.tasks;
+      },
+      check: async () => {
+        const command = projectCommands(wt.path).test;
+        if (!command) return;
+        const result = await runShell(command, wt.path, TEST_TIMEOUT_MS);
+        if (result.code !== 0 || result.timedOut) throw new Error(`同步 dev 后项目测试失败：${tail(result.output, 1500)}`);
+      },
+      test: async (prompt) => {
+        const result = await runPublishInSession(ctx.d, sid, prompt, PUBLISH_TIMEOUT_MS, { resetWaiting: true });
+        if (result.state !== "idle") {
+          await ctx.d.cancel(sid, { local: true }).catch(() => undefined);
+          return { passed: false, output: "" };
+        }
+        const lines = result.reply.trim().split("\n");
+        const verdict = lines.at(-1)?.replaceAll("*", "").trim();
+        if (verdict !== "测试结果：通过" && verdict !== "测试结果：失败") return { passed: false, output: "" };
+        return { passed: verdict === "测试结果：通过", output: lines.slice(0, -1).join("\n") || verdict };
+      },
+    });
+    if (step.repair && stage === "preview_test") {
+      await forge.fetch(meta.repo);
+      const base = await startNewRound(meta.cwd, "dev");
+      ctx.d.store.updateMeta(sid, { base, planResultPending: undefined });
+      await forge.deleteRemoteBranch({ repoDir: meta.repo, branch: meta.branch });
+    }
+  } catch (error) {
+    step = { next: stage, state: {}, error: (error as Error).message.split("\n")[0] };
+  }
+  await lease.forwarding?.catch(() => undefined);
+  await forwardPublishEvents(ctx, lease).catch(() => undefined);
+  if (lease.lost) return "failed";
+  const response = await ctx.gw.call("POST", route, { ...auth, ...step });
+  if (response.status !== 200) throw new Error(`交付进度回传失败（${response.status}）`);
+  if (step.next === "published" && sid) await ctx.d.cancel(sid, { local: true }).catch(() => undefined);
+  return "published";
 }
 
 function forwardPublishEvents(ctx: Ctx, lease: PublishLease): Promise<void> {

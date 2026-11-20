@@ -13,6 +13,7 @@ interface FakePr {
   body: string;
   state: "OPEN" | "MERGED" | "CLOSED";
   mergeSha: string | null;
+  mergedHead?: string;
 }
 
 const g = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString();
@@ -83,8 +84,8 @@ export class FakeForge implements Forge {
     g(wtPath, ...args);
   }
 
-  async findPr(opts: { head: string }): Promise<PrRef | null> {
-    const pr = this.prs.find((p) => p.head === opts.head && p.state === "OPEN");
+  async findPr(opts: { head: string; base?: string }): Promise<PrRef | null> {
+    const pr = this.prs.find((p) => p.head === opts.head && (!opts.base || p.base === opts.base) && p.state === "OPEN");
     return pr ? { number: pr.number, url: `https://fake/pull/${pr.number}` } : null;
   }
 
@@ -94,7 +95,7 @@ export class FakeForge implements Forge {
     return { number: pr.number, url: `https://fake/pull/${pr.number}` };
   }
 
-  async mergePr(opts: { number: number; matchHead: string }): Promise<{ ok: boolean; output: string }> {
+  async mergePr(opts: { number: number; matchHead: string; preserveHistory?: boolean }): Promise<{ ok: boolean; output: string }> {
     this.mergeCalls++;
     const pr = this.prs.find((p) => p.number === opts.number)!;
     if (pr.state !== "OPEN") return { ok: false, output: `PR 不是开放状态：${pr.state}` };
@@ -105,13 +106,14 @@ export class FakeForge implements Forge {
     this.identity(tmp);
     g(tmp, "checkout", pr.base);
     try {
-      g(tmp, "merge", "--squash", `origin/${pr.head}`);
+      g(tmp, "merge", ...(opts.preserveHistory ? ["--no-ff", "--no-edit"] : ["--squash"]), `origin/${pr.head}`);
     } catch (e) {
       return { ok: false, output: `合并冲突：${(e as Error).message.split("\n")[0]}` };
     }
-    g(tmp, "commit", "-m", `${pr.title} (#${pr.number})`);
+    if (!opts.preserveHistory) g(tmp, "commit", "-m", `${pr.title} (#${pr.number})`);
     g(tmp, "push", "origin", pr.base);
     pr.state = "MERGED";
+    pr.mergedHead = head!;
     pr.mergeSha = g(tmp, "rev-parse", "HEAD").trim();
     return { ok: true, output: "merged" };
   }
@@ -123,7 +125,7 @@ export class FakeForge implements Forge {
 
   async prInfo(opts: { number: number }): Promise<PrInfo> {
     const pr = this.prs.find((p) => p.number === opts.number)!;
-    return { state: pr.state, mergeSha: pr.mergeSha };
+    return { state: pr.state, mergeSha: pr.mergeSha, head: pr.mergedHead ?? this.remoteHead(pr.head) ?? undefined };
   }
 
   async lastPrNumber(opts: { branch: string }): Promise<number | null> {

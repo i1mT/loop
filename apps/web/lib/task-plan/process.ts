@@ -6,19 +6,19 @@ import { getEnv } from "../env.ts";
 import { publicOrigin } from "../public-url.ts";
 
 // 数据库保存重试进度；定时调度或队列重复唤醒都只处理到期的记录。
-export async function processTaskPlans(db: Db): Promise<void> {
+export async function processTaskPlans(db: Db, { syncWiki = true } = {}): Promise<void> {
   const now = Date.now();
   const rounds = (
     await db
       .prepare(
         `UPDATE task_plan_rounds r SET locked_until=?
     WHERE (r.task_id,r.round) IN (SELECT x.task_id,x.round FROM task_plan_rounds x JOIN tasks t ON t.id=x.task_id
-      WHERE x.phase='syncing' AND x.retry_at<=? AND x.locked_until<? AND t.round=x.round
+      WHERE x.phase='syncing' AND (x.binding_id IS NULL OR ?) AND x.retry_at<=? AND x.locked_until<? AND t.round=x.round
       AND t.stage IN ('running','needs_you','plan_reviewing') ORDER BY x.updated_at LIMIT 5 FOR UPDATE OF x SKIP LOCKED)
-    RETURNING r.task_id,r.round,r.revision`,
+    RETURNING r.task_id,r.round,r.revision,r.binding_id`,
       )
-      .bind(now + 120000, now, now)
-      .all<{ task_id: string; round: number; revision: number }>()
+      .bind(now + 120000, syncWiki, now, now)
+      .all<{ task_id: string; round: number; revision: number; binding_id: string | null }>()
   ).results;
   for (const row of rounds) {
     try {
@@ -35,17 +35,17 @@ export async function processTaskPlans(db: Db): Promise<void> {
         !["running", "needs_you", "plan_reviewing"].includes(task.stage)
       )
         continue;
-      const { url } = await syncTaskDocument({
+      const url = row.binding_id ? (await syncTaskDocument({
         taskId: row.task_id,
         round: row.round,
         title: plan.title || task.title,
         markdown: plan.markdown,
         kind: "plan",
         revision: row.revision,
-      });
+      })).url : null;
       // 方案写入飞书文档后，只把简短说明与文档链接发到来源会话。
       // 通知入队放在推进阶段之前：入队失败时这一轮会重试，文档追加本身是幂等的。
-      await enqueuePlanNotification(
+      if (url) await enqueuePlanNotification(
         db,
         {
           taskId: row.task_id,
@@ -98,12 +98,13 @@ export async function processTaskPlans(db: Db): Promise<void> {
         .run();
     }
   }
+  if (!syncWiki) return;
   const records = (
     await db
       .prepare(
         `UPDATE task_plan_records r SET locked_until=? WHERE (r.task_id,r.round,r.kind) IN
-    (SELECT task_id,round,kind FROM task_plan_records WHERE content_hash IS DISTINCT FROM synced_hash AND retry_at<=? AND locked_until<?
-      ORDER BY updated_at LIMIT 5 FOR UPDATE SKIP LOCKED) RETURNING task_id,round,kind,markdown,content_hash`,
+    (SELECT pr.task_id,pr.round,pr.kind FROM task_plan_records pr JOIN task_plan_rounds tp USING(task_id,round) WHERE tp.binding_id IS NOT NULL AND content_hash IS DISTINCT FROM synced_hash AND pr.retry_at<=? AND pr.locked_until<?
+      ORDER BY pr.updated_at LIMIT 5 FOR UPDATE OF pr SKIP LOCKED) RETURNING task_id,round,kind,markdown,content_hash`,
       )
       .bind(Date.now() + 120000, Date.now(), Date.now())
       .all<{

@@ -1,5 +1,5 @@
 // 前端使用的接口返回形状（与 /api/* 一致）
-import type { Stage } from "@loop/core";
+import type { DeliverySettings, Stage } from "@loop/core";
 
 export interface TaskItem {
   id: string;
@@ -57,6 +57,7 @@ export interface PoolItem {
 }
 
 export interface ProjectItem {
+  delivery_settings?: DeliverySettings | null;
   canManage?: boolean;
   bindings?: import("./routing/bindings.ts").ProjectBinding[];
   id: string;

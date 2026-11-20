@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { DeliverySettingsForm } from "@/components/project/delivery-settings-form.tsx";
 import { SaveBar } from "@/components/project/save-bar.tsx";
 import { useProjectCtx } from "@/components/project/project-context.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -80,13 +81,15 @@ export default function ProjectSettings() {
           <div className="grid gap-4 sm:grid-cols-2">
             {!canManage&&<p className="text-sm text-ink-2 sm:col-span-2">公共配置由拥有全部机器使用权限的成员管理。你可以调整下方有权使用的机器绑定；其他绑定会保留。</p>}
             <Field label="项目名称">{(id) => <Input disabled={!canManage} id={id} value={b.name} onChange={(e) => setB({ ...b, name: e.target.value })} />}</Field>
-            <Field label="GitHub 仓库">{(id) => <Input disabled={!canManage} id={id} value={b.repo} onChange={(e) => setB({ ...b, repo: e.target.value })} spellCheck={false} />}</Field>
-            <Field label="主分支">{(id) => <Input disabled={!canManage} id={id} value={b.mainRef} onChange={(e) => setB({ ...b, mainRef: e.target.value })} />}</Field>
+            <Field label="仓库路径">{(id) => <Input disabled={!canManage} id={id} value={b.repo} onChange={(e) => setB({ ...b, repo: e.target.value })} spellCheck={false} />}</Field>
+            <Field label="旧任务目标分支">{(id) => <Input disabled={!canManage} id={id} value={b.mainRef} onChange={(e) => setB({ ...b, mainRef: e.target.value })} />}</Field>
 
           </div>
           <SaveBar busy={bBusy} dirty={JSON.stringify(b) !== JSON.stringify(basics)} disabled={!b.name.trim()||!canManage} error={bErr} />
         </form>
       </Card>
+
+      <DeliverySettingsForm key={project.id} project={project} />
 
       <Card>
         <h2 className="border-b border-line px-4 py-3 text-[15px] font-semibold">机器与智能体</h2>

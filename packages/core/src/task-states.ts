@@ -1,5 +1,7 @@
 // 任务阶段状态机。没有 `blocked`：需要人介入一律是 `needs_you`，可在网关内回复后恢复。
 // 事实源：docs/contracts/task-states.md
+import { DELIVERY_STAGES } from "./delivery.js";
+
 export const STAGES = [
   "received", // 已收到，未派发
   "batched", // 等待合并（小改动攒批）
@@ -13,6 +15,7 @@ export const STAGES = [
   "approved", // 发布审核通过，待发布
   "publishing", // 发布执行中（智能体在项目主分支上执行发布）
   "publish_review", // 智能体发布结束但没有给出明确结论，等人确认结果
+  ...DELIVERY_STAGES,
   "published", // 已发布（终态）
   "rejected", // 审核驳回（终态，可由人重开）
   "failed", // 失败（终态，可由人重试）
@@ -28,7 +31,7 @@ const EDGES: Record<Stage, readonly Stage[]> = {
   batched: ["queued", "cancelled"],
   held: ["queued", "cancelled"],
   queued: ["running", "failed", "cancelled"],
-  running: ["needs_you", "plan_reviewing", "reviewing", "failed", "cancelled"],
+  running: ["needs_you", "plan_reviewing", "reviewing", "preview_deploy", "failed", "cancelled"],
   needs_you: ["running", "plan_reviewing", "cancelled", "failed"],
   plan_reviewing: ["plan_approved", "rejected", "cancelled"],
   plan_approved: ["running", "cancelled"],
@@ -37,6 +40,11 @@ const EDGES: Record<Stage, readonly Stage[]> = {
   // 发布前发现提交已变（主分支前进导致 rebase）：必须重新审核，只能回到 reviewing
   publishing: ["published", "publish_review", "failed", "reviewing"],
   publish_review: ["published", "failed"],
+  preview_deploy: ["preview_test", "running", "production_deploy", "cancelled"],
+  preview_test: ["preview_deploy", "production_review", "running", "production_deploy", "cancelled"],
+  production_review: ["production_deploy", "cancelled"],
+  production_deploy: ["production_test", "production_review", "cancelled"],
+  production_test: ["published", "production_deploy", "cancelled"],
   published: [],
   rejected: [],
   failed: [],

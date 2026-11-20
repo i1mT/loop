@@ -1,7 +1,7 @@
 import { stageChange, notificationContext } from "./feishu/jobs/context.ts";
 // 守护进程协议的服务端实现（见 docs/contracts/daemon-protocol.md）。
 import { parseSessionEvent } from "@loop/core";
-import { canTransition, type Stage } from "@loop/core";
+import { canTransition, isDeliveryStage, type Stage } from "@loop/core";
 import { getDb, now, newId } from "./db.ts";
 import {
   getProject,
@@ -28,6 +28,8 @@ import {
   STAGE_LABEL,
 } from "./status.ts";
 
+import { getDelivery } from "./delivery.ts";
+
 export const LEASE_MS = 60_000;
 
 /** 领取：优先给本守护进程原有的租约（断线重连）；其次排队中的任务；再次是已批准待发布的任务；最后接管过期的运行中/发布中任务 */
@@ -35,6 +37,8 @@ export async function claim(
   daemonId: string,
   holding: string[] = [],
   supportsTechnicalPlan = false,
+  supportsDelivery = false,
+  delivering: string[] = [],
 ): Promise<{
   task: Record<string, unknown>;
   leaseId: string;
@@ -42,9 +46,12 @@ export async function claim(
 } | null> {
   const db = await getDb();
   const t = now();
-  const supported = supportsTechnicalPlan
+  const supported = (supportsTechnicalPlan
     ? ""
-    : " AND NOT EXISTS (SELECT 1 FROM task_plan_rounds r WHERE r.task_id=t.id AND r.round=t.round)";
+    : " AND NOT EXISTS (SELECT 1 FROM task_plan_rounds r WHERE r.task_id=t.id AND r.round=t.round)") + (supportsDelivery
+    ? ` AND (t.stage NOT IN ('preview_deploy','preview_test','production_review','production_deploy','production_test') OR EXISTS (
+       SELECT 1 FROM task_delivery d WHERE d.task_id=t.id AND d.round=t.round AND d.next_at<=${t} AND (t.error IS NULL OR d.state->>'productionMerge' IS NOT NULL AND t.stage IN ('preview_deploy','preview_test'))))`
+    : " AND NOT EXISTS (SELECT 1 FROM task_delivery d WHERE d.task_id=t.id AND d.round=t.round)");
   await touchMachine(db, daemonId); // 每次领取都刷新在线状态
   await resumeAfterPublish(daemonId);
   const mine = await db
@@ -65,15 +72,17 @@ export async function claim(
         `SELECT t.* FROM tasks t
          WHERE t.machine_id = ?
            AND (t.stage IN ('queued', 'approved')
+             OR (t.stage='preview_deploy' AND EXISTS (SELECT 1 FROM leases l WHERE l.task_id=t.id AND l.daemon_id=t.machine_id AND l.released=0 AND l.expires_at>${t}))
              OR (t.stage IN ('needs_you','plan_approved','plan_reviewing')
                  AND EXISTS (SELECT 1 FROM inbox i WHERE i.task_id=t.id AND i.delivered_at IS NULL)
                  AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.task_id=t.id AND l.released=0 AND l.expires_at>?))
-             OR (t.stage IN ('running', 'publishing') AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.task_id=t.id AND l.released=0 AND l.expires_at>?))
+             OR (t.stage IN ('running', 'publishing', 'preview_deploy', 'preview_test', 'production_review', 'production_deploy', 'production_test') AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.task_id=t.id AND l.released=0 AND l.expires_at>?))
              OR (t.stage = 'reviewing' AND t.head_sha IS NULL AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.task_id=t.id AND l.released=0 AND l.expires_at>?)))
          ${supported}
+         ${delivering.length ? `AND t.id NOT IN (${delivering.map(() => "?").join(",")})` : ""}
          ORDER BY CASE WHEN t.stage='approved' THEN 0 WHEN t.priority='urgent' THEN 0 ELSE 1 END, t.created_at ASC LIMIT 1`,
       )
-      .bind(daemonId, t, t, t)
+      .bind(daemonId, t, t, t, ...delivering)
       .first<TaskRow>();
     task = q ?? null;
   }
@@ -125,11 +134,12 @@ export async function claim(
     if (!claimed) return null;
     task = claimed;
   }
-  const job =
+  const job = isDeliveryStage(task.stage) ? "delivery" :
     task.stage === "publishing" || task.stage === "approved"
       ? "publish"
       : "work";
   const project = await getProject(task.project_id);
+  const delivery = await getDelivery(db, task.id, task.round);
   const session = await db
     .prepare(
       `SELECT id FROM sessions WHERE task_id=? ORDER BY created_at DESC LIMIT 1`,
@@ -148,8 +158,9 @@ export async function claim(
       effort: task.effort,
       instructions: project?.instructions ?? null,
       repoPath: task.execution_snapshot ? task.execution_path ?? null : project?.local_path ?? null,
-      githubRepo: project?.github_repo ?? null,
-      mainRef: project?.main_ref ?? "main",
+      githubRepo: delivery?.repo ?? project?.github_repo ?? null,
+      mainRef: delivery ? "dev" : project?.main_ref ?? "main",
+      delivery: delivery ? { stage: task.stage, state: delivery.state, settings: job === "delivery" ? project?.delivery_settings ?? null : null } : null,
       branch: task.branch,
       prNumber: task.pr_number,
       prUrl: task.pr_url,
@@ -163,6 +174,7 @@ export async function claim(
       sessionId: session?.id ?? null,
       reattach,
       job,
+      headSha: task.head_sha,
       approvedSha: task.approved_sha,
       mergeSha: task.merge_sha,
       round: task.round ?? 1,
@@ -305,8 +317,9 @@ export async function transitionTo(
     return { stage: "plan_reviewing", rejected: false };
   }
   // 审核已通过、正在发布：阶段只由发布结果推进，会话事件（迟到的 idle、被取消等）不能改动
-  if (task.stage === "approved" || task.stage === "publishing")
+  if (task.stage === "approved" || task.stage === "publishing" || isDeliveryStage(task.stage))
     return { stage: task.stage, rejected: false };
+  if (state === "idle" && await getDelivery(db, task.id, task.round)) return { stage: task.stage, rejected: false };
   const r = nextTaskStage(task.stage, state);
   if (r.stage === task.stage) return r;
   await setStage(taskId, r.stage);
@@ -527,6 +540,15 @@ export async function reportHead(
       status: 409,
       error: "技术方案尚未保存或通过审核，不能回传实现提交",
     };
+  const delivery = await getDelivery(db, current.id, current.round);
+  if (delivery) {
+    if (!pr.prNumber) return { ok: false, status: 400, error: "预览合入需要任务 PR/MR" };
+    const result = await db.prepare(`UPDATE tasks SET stage='preview_deploy',head_sha=?,branch=?,pr_number=?,pr_url=?,error=NULL,updated_at=?
+      WHERE id=? AND round=? AND stage IN ('running','needs_you')
+      AND EXISTS(SELECT 1 FROM leases WHERE id=? AND task_id=tasks.id AND daemon_id=? AND released=0 AND expires_at>?)`)
+      .bind(head, pr.branch ?? null, pr.prNumber, pr.prUrl ?? null, now(), current.id, current.round, leaseId, daemonId, now()).run();
+    return { ok: result.meta.changes === 1, status: result.meta.changes === 1 ? 200 : 409 };
+  }
   await db
     .prepare(
       `UPDATE tasks SET head_sha=?, branch=COALESCE(?, branch), pr_number=COALESCE(?, pr_number), pr_url=COALESCE(?, pr_url), updated_at=? WHERE id=?`,

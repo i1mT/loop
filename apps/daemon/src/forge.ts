@@ -1,3 +1,4 @@
+import type { DeploymentRun } from "@loop/core";
 // Forge：代码托管平台的操作抽象。守护进程通过它完成：确保检出、拉取、推送、建 PR、合并 PR。
 // GitHub 实现用 git 与 gh；GitLab（含自建实例）用 git 与 REST API（GITLAB_TOKEN）；
 // 测试用本地裸仓库加内存 PR 的假实现（src/testing/fake-forge.ts）。
@@ -17,18 +18,22 @@ export interface PrInfo {
   state: "OPEN" | "MERGED" | "CLOSED";
   /** 合并后主分支上的提交（仅已合并时有值） */
   mergeSha: string | null;
+  head?: string;
 }
 
+export interface PipelineQuery { githubRepo: string; branch: string; sha: string; workflow: string; cwd: string }
+
 export interface Forge {
+  pipeline?(opts: PipelineQuery): Promise<DeploymentRun | null>;
   /** 确保本机有一份检出并返回其路径。有 localPath 则用它（校验 origin），否则在数据目录克隆。 */
   ensureCheckout(opts: { githubRepo: string; localPath?: string | null; dataDir: string }): Promise<string>;
   fetch(repoDir: string): Promise<void>;
   push(wtPath: string, branch: string, opts: { force: boolean }): Promise<void>;
   /** 查找分支上已有的开放 PR（避免重复创建） */
-  findPr(opts: { githubRepo: string; head: string; cwd: string }): Promise<PrRef | null>;
+  findPr(opts: { githubRepo: string; head: string; base?: string; cwd: string }): Promise<PrRef | null>;
   createPr(opts: { githubRepo: string; base: string; head: string; title: string; body: string; cwd: string }): Promise<PrRef>;
   /** 合并 PR，且只合并 matchHead 这个提交（审核过的那个）。 */
-  mergePr(opts: { githubRepo: string; number: number; matchHead: string; cwd: string }): Promise<{ ok: boolean; output: string }>;
+  mergePr(opts: { githubRepo: string; number: number; matchHead: string; preserveHistory?: boolean; cwd: string }): Promise<{ ok: boolean; output: string }>;
   prInfo(opts: { githubRepo: string; number: number; cwd: string }): Promise<PrInfo>;
   /** 关闭 PR（驳回或取消任务时）。已合并或已关闭则什么都不做。 */
   closePr(opts: { githubRepo: string; number: number; comment: string; cwd: string }): Promise<void>;
@@ -95,6 +100,10 @@ async function sh(cmd: string, args: string[], cwd?: string): Promise<string> {
 }
 
 export class GitHubForge implements Forge {
+  private readonly run: typeof sh;
+
+  constructor(run = sh) { this.run = run; }
+
   async ensureCheckout(opts: { githubRepo: string; localPath?: string | null; dataDir: string }): Promise<string> {
     if (!validGithubRepo(opts.githubRepo)) throw new Error(`GitHub 仓库格式应为 owner/name：${opts.githubRepo}`);
     let dir: string;
@@ -124,10 +133,11 @@ export class GitHubForge implements Forge {
     await sh("git", args, wtPath);
   }
 
-  async findPr(opts: { githubRepo: string; head: string; cwd: string }): Promise<PrRef | null> {
-    const out = await sh("gh", ["pr", "list", "--repo", opts.githubRepo, "--head", opts.head, "--state", "open", "--json", "number,url"], opts.cwd);
-    const list = JSON.parse(out || "[]") as { number: number; url: string }[];
-    return list[0] ?? null;
+  async findPr(opts: { githubRepo: string; head: string; base?: string; cwd: string }): Promise<PrRef | null> {
+    const out = await sh("gh", ["pr", "list", "--repo", opts.githubRepo, "--head", opts.head, ...(opts.base ? ["--base", opts.base] : []), "--state", "open", "--json", "number,url,isCrossRepository"], opts.cwd);
+    const list = JSON.parse(out || "[]") as (PrRef & { isCrossRepository: boolean })[];
+    const pr = list.find((row) => !row.isCrossRepository);
+    return pr ? { number: pr.number, url: pr.url } : null;
   }
 
   async createPr(opts: { githubRepo: string; base: string; head: string; title: string; body: string; cwd: string }): Promise<PrRef> {
@@ -138,10 +148,10 @@ export class GitHubForge implements Forge {
     return { number: Number(m[1]), url };
   }
 
-  async mergePr(opts: { githubRepo: string; number: number; matchHead: string; cwd: string }): Promise<{ ok: boolean; output: string }> {
+  async mergePr(opts: { githubRepo: string; number: number; matchHead: string; preserveHistory?: boolean; cwd: string }): Promise<{ ok: boolean; output: string }> {
     try {
       // 不用 --delete-branch：它会尝试删除本地分支，而分支正被 worktree 使用；清理由调用方负责
-      const out = await sh("gh", ["pr", "merge", String(opts.number), "--repo", opts.githubRepo, "--squash", "--match-head-commit", opts.matchHead], opts.cwd);
+      const out = await sh("gh", ["pr", "merge", String(opts.number), "--repo", opts.githubRepo, opts.preserveHistory ? "--merge" : "--squash", "--match-head-commit", opts.matchHead], opts.cwd);
       return { ok: true, output: out.trim() };
     } catch (e) {
       const err = e as { stderr?: string; message: string };
@@ -150,9 +160,19 @@ export class GitHubForge implements Forge {
   }
 
   async prInfo(opts: { githubRepo: string; number: number; cwd: string }): Promise<PrInfo> {
-    const out = await sh("gh", ["pr", "view", String(opts.number), "--repo", opts.githubRepo, "--json", "state,mergeCommit"], opts.cwd);
-    const j = JSON.parse(out) as { state: PrInfo["state"]; mergeCommit?: { oid: string } | null };
-    return { state: j.state, mergeSha: j.mergeCommit?.oid ?? null };
+    const out = await sh("gh", ["pr", "view", String(opts.number), "--repo", opts.githubRepo, "--json", "state,mergeCommit,headRefOid"], opts.cwd);
+    const j = JSON.parse(out) as { state: PrInfo["state"]; headRefOid?: string; mergeCommit?: { oid: string } | null };
+    return { state: j.state, mergeSha: j.mergeCommit?.oid ?? null, head: j.headRefOid };
+  }
+
+  async pipeline(opts: PipelineQuery): Promise<DeploymentRun | null> {
+    if (!opts.workflow) throw new Error("请在项目设置填写对应环境的 GitHub Actions 部署 workflow");
+    const query = new URLSearchParams({ branch: opts.branch, event: "push", head_sha: opts.sha, per_page: "30" });
+    const data = JSON.parse(await this.run("gh", ["api", `repos/${opts.githubRepo}/actions/workflows/${encodeURIComponent(opts.workflow)}/runs?${query}`], opts.cwd)) as {
+      workflow_runs: { id: number; html_url: string; status: string; conclusion: string | null; head_branch: string; head_sha: string; event: string }[];
+    };
+    const run = data.workflow_runs.find((r) => r.head_branch === opts.branch && r.head_sha === opts.sha && r.event === "push");
+    return run ? { id: String(run.id), url: run.html_url, status: run.status === "completed" ? finishedRun(run.conclusion) : "pending" } : null;
   }
 
   async closePr(opts: { githubRepo: string; number: number; comment: string; cwd: string }): Promise<void> {
@@ -176,6 +196,8 @@ interface GitLabMr {
   state: "opened" | "merged" | "closed" | "locked";
   sha: string;
   merge_commit_sha: string | null;
+  source_project_id?: number;
+  target_project_id?: number;
 }
 
 /** 自建 GitLab：git 操作用 SSH/HTTP 凭据，PR（MR）走 REST API（需要 api scope 的 GITLAB_TOKEN）。 */
@@ -286,13 +308,14 @@ export class GitLabForge implements Forge {
   async findPr(opts: {
     githubRepo: string;
     head: string;
+    base?: string;
     cwd: string;
   }): Promise<PrRef | null> {
     const list = await this.api<GitLabMr[]>(
       "GET",
       `${this.project(opts.githubRepo)}/merge_requests?state=opened&source_branch=${encodeURIComponent(opts.head)}`,
     );
-    const first = list[0];
+    const first = list.find((row) => row.source_project_id === row.target_project_id);
     return first ? { number: first.iid, url: first.web_url } : null;
   }
 
@@ -322,6 +345,7 @@ export class GitLabForge implements Forge {
     githubRepo: string;
     number: number;
     matchHead: string;
+    preserveHistory?: boolean;
     cwd: string;
   }): Promise<{ ok: boolean; output: string }> {
     try {
@@ -339,6 +363,7 @@ export class GitLabForge implements Forge {
         `${this.project(opts.githubRepo)}/merge_requests/${opts.number}/merge`,
         {
           sha: opts.matchHead,
+          ...(opts.preserveHistory ? { squash: false } : {}),
           should_remove_source_branch: false,
         },
       );
@@ -360,7 +385,17 @@ export class GitLabForge implements Forge {
         : mr.state === "merged"
           ? "MERGED"
           : "CLOSED";
-    return { state, mergeSha: mr.merge_commit_sha ?? null };
+    return { state, mergeSha: mr.merge_commit_sha ?? null, head: mr.sha };
+  }
+
+  async pipeline(opts: PipelineQuery): Promise<DeploymentRun | null> {
+    const query = new URLSearchParams({ ref: opts.branch, sha: opts.sha, source: "push", order_by: "id", sort: "desc" });
+    const runs = await this.api<{ id: number; web_url: string; ref: string; sha: string; source: string; status: string }[]>(
+      "GET", `${this.project(opts.githubRepo)}/pipelines?${query}`,
+    );
+    const run = runs.find((r) => r.ref === opts.branch && r.sha === opts.sha && r.source === "push");
+    if (!run) return null;
+    return { id: String(run.id), url: run.web_url, status: ["success", "failed", "canceled", "skipped"].includes(run.status) ? finishedRun(run.status) : "pending" };
   }
 
   async closePr(opts: {
@@ -403,4 +438,11 @@ export class GitLabForge implements Forge {
     );
     return list[0]?.iid ?? null;
   }
+}
+
+function finishedRun(result: string | null): DeploymentRun["status"] {
+  if (result === "success") return "success";
+  if (result === "canceled" || result === "cancelled") return "cancelled";
+  if (result === "skipped") return "skipped";
+  return "failed";
 }

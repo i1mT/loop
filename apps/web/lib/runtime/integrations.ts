@@ -11,11 +11,11 @@ import { processTaskPlans } from "../task-plan/process.ts";
 export async function runIntegrations(): Promise<void> {
   const env = getEnv();
   // 本机转发模式不存数据，后台任务只属于持有数据库的网关。
-  if (!env.FEISHU_ENCRYPTION_KEY || parseLocalConfig(env.LOOP_LOCAL)) return;
+  if (parseLocalConfig(env.LOOP_LOCAL)) return;
   const db = await getDb();
   await recoverFeedbackSubmissions(db);
-  await processTaskPlans(db);
-  await processFeishuJobs(db, env.FEISHU_ENCRYPTION_KEY, publicOrigin(env.LOOP_PUBLIC_URL), 5);
+  await processTaskPlans(db, { syncWiki: !!env.FEISHU_ENCRYPTION_KEY });
+  if (env.FEISHU_ENCRYPTION_KEY) await processFeishuJobs(db, env.FEISHU_ENCRYPTION_KEY, publicOrigin(env.LOOP_PUBLIC_URL), 5);
 }
 
 /** 出错时不打印具体原因：第三方响应与凭证不能进入日志。 */

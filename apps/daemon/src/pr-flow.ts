@@ -78,6 +78,7 @@ export interface MergeCtx {
   prNumber: number;
   /** 审核时批准的提交：只合并它 */
   approvedSha: string;
+  beforeMerge?: () => void;
 }
 
 /**
@@ -113,6 +114,7 @@ export async function syncAndMerge(ctx: MergeCtx): Promise<MergeOutcome> {
     return { outcome: "review_needed", detail: `合并前提交已变（${ctx.approvedSha.slice(0, 8)} → ${head.slice(0, 8)}），已同步主分支并更新 PR，需要重新审核` };
   }
 
+  ctx.beforeMerge?.();
   const m = await ctx.forge.mergePr({ ...info, matchHead: ctx.approvedSha });
   state = await ctx.forge.prInfo(info);
   // 合并命令报错但 PR 实际已合并：按已合并处理

@@ -1,4 +1,5 @@
 "use client";
+import { isDeliveryStage } from "@loop/core";
 import { ChevronRight, Copy, ExternalLink, GitPullRequest, Undo2 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -6,6 +7,7 @@ import { use, useMemo, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Dialog } from "@/components/ui/dialog.tsx";
 import { ApiError, apiPost, mutate, useApi } from "@/lib/client-api.ts";
+import { DeliveryCard } from "@/components/task/delivery-card.tsx";
 import { Pipeline } from "@/components/task/pipeline.tsx";
 import { TaskActions } from "@/components/task/task-actions.tsx";
 import { ReviewCard } from "@/components/task/review-card.tsx";
@@ -77,12 +79,12 @@ function TaskWorkspace({ id, children }: { id: string; children: ReactNode }) {
   const base = `/tasks/${id}`;
   const { task, project } = data;
   const machineName = machines.data?.machines.find((machine) => machine.id === task.machine_id)?.name;
-  const progress = taskProgress(task, data.session, !!data.leaseActive);
+  const progress = taskProgress(task, data.session, !!data.leaseActive, data.delivery ?? undefined);
   if (error && progress.activity) {
     progress.activity = { label: "会话暂未同步", spinning: false };
   }
   const { info } = progress;
-  const returnTo = previousTaskStage(task.stage, !!task.merge_sha, !!task.head_sha);
+  const returnTo = data.delivery ? null : previousTaskStage(task.stage, !!task.merge_sha, !!task.head_sha);
   const returnLabel = returnTo === "reviewing" ? "审核" : "开发";
   const rewindQueued = data.pending.some((item) => item.kind === "rewind");
   const rewindDescription = task.stage === "publishing"
@@ -148,7 +150,7 @@ function TaskWorkspace({ id, children }: { id: string; children: ReactNode }) {
 
       <div className="mb-4 flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-y border-line py-2 sm:mb-5">
         <div className="min-w-0 flex-1 basis-52">
-          <Pipeline position={progress.step} tone={info.tone} />
+          <Pipeline position={progress.step} tone={info.tone} delivery={!!data.delivery} />
         </div>
         {returnTo && <Button size="sm" variant="ghost" className="ml-auto" disabled={rewindQueued} onClick={() => setRewinding(true)}>
           <Undo2 className="size-3.5" aria-hidden /> {rewindQueued ? "发布结束后回退" : `回退到${returnLabel}`}
@@ -181,7 +183,8 @@ function TaskWorkspace({ id, children }: { id: string; children: ReactNode }) {
       </div>}
       <div className="task-workspace grid min-w-0 gap-4 sm:gap-5">
         <div className="task-workspace-status min-w-0">
-          <ReviewCard task={task} progress={progress} checks={checks} reload={reload} />
+          {data.delivery && <DeliveryCard task={task} state={data.delivery.state} reload={reload} />}
+          {(!data.delivery || (!isDeliveryStage(task.stage) && task.stage !== "published")) && <ReviewCard task={task} progress={progress} checks={checks} reload={reload} />}
         </div>
         <section aria-label="任务内容与会话" className="task-workspace-main flex min-w-0 flex-col rounded-[14px] border border-line bg-card">
           <RouteTabs

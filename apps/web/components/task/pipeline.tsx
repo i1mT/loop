@@ -1,13 +1,14 @@
 import clsx from "clsx";
 import { Check, X } from "lucide-react";
-import { PIPELINE, type TaskProgress, type Tone } from "@/lib/status.ts";
+import { DELIVERY_PIPELINE, PIPELINE, type TaskProgress, type Tone } from "@/lib/status.ts";
 
 /** 排队 → 开发 → 审核 → 发布。发布失败停在发布节点。 */
-export function Pipeline({ position, tone }: { position: TaskProgress["step"]; tone: Tone }) {
+export function Pipeline({ position, tone, delivery }: { delivery?: boolean; position: TaskProgress["step"]; tone: Tone }) {
   const { index, closed } = position;
+  const labels = delivery ? DELIVERY_PIPELINE : PIPELINE;
   return (
-    <ol className="flex max-w-[42rem] items-center" aria-label="任务进度">
-      {PIPELINE.map((label, i) => {
+    <ol className={delivery ? "grid grid-cols-2 gap-x-3 gap-y-2 md:grid-cols-4 xl:grid-cols-7" : "flex max-w-[42rem] items-center"} aria-label="任务进度">
+      {labels.map((label, i) => {
         const done = !closed && i < index;
         const current = !closed && i === index;
         return (
@@ -23,9 +24,9 @@ export function Pipeline({ position, tone }: { position: TaskProgress["step"]; t
               >
                 {done ? <Check className="size-3" aria-hidden /> : current && tone === "bad" ? <X className="size-3" aria-hidden /> : <span className={clsx("size-1.5 rounded-full", current ? "bg-current" : "bg-line-strong")} aria-hidden />}
               </span>
-              <span className={clsx("whitespace-nowrap text-[13px]", current ? "font-semibold text-ink" : done ? "text-ink-2" : "text-ink-3")}>{label}</span>
+              <span className={clsx("text-[13px] leading-tight", !delivery && "whitespace-nowrap", current ? "font-semibold text-ink" : done ? "text-ink-2" : "text-ink-3")}>{label}</span>
             </div>
-            {i < PIPELINE.length - 1 && <span className={clsx("mx-1.5 h-px min-w-1 flex-1 bg-line sm:mx-3")} aria-hidden />}
+            {!delivery && i < labels.length - 1 && <span className={clsx("mx-1.5 h-px min-w-1 flex-1 bg-line sm:mx-3")} aria-hidden />}
           </li>
         );
       })}

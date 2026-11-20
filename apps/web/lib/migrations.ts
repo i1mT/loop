@@ -225,6 +225,15 @@ export const MIGRATIONS: string[][] = [
     `CREATE INDEX IF NOT EXISTS idx_inbox_task_pending ON inbox(task_id, id) WHERE delivered_at IS NULL AND task_id IS NOT NULL`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_pending_rewind ON inbox(task_id) WHERE kind='rewind' AND delivered_at IS NULL`,
   ],
+  [
+    `ALTER TABLE projects ADD COLUMN IF NOT EXISTS delivery_settings JSONB`,
+    `ALTER TABLE task_plan_rounds ALTER COLUMN binding_id DROP NOT NULL`,
+    `ALTER TABLE task_plan_rounds ALTER COLUMN wiki_url DROP NOT NULL`,
+    `CREATE TABLE IF NOT EXISTS task_delivery (
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      round INTEGER NOT NULL, repo TEXT NOT NULL, state JSONB NOT NULL DEFAULT '{}',
+      next_at BIGINT NOT NULL DEFAULT 0, PRIMARY KEY(task_id,round))`,
+  ],
 ];
 
 
